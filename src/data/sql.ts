@@ -3,6 +3,7 @@
  * (expo-sqlite, see db.ts) and in Jest (node:sqlite, see sql.test.ts).
  * Nothing here talks to a network.
  */
+import { normalizeLogo } from '../domain/logo';
 import type { ImportDraft } from '../domain/csv';
 import {
   DEFAULT_SETTINGS,
@@ -27,7 +28,7 @@ export interface SqlDb extends SqlExec {
   withExclusiveTransactionAsync(task: (txn: SqlExec) => Promise<void>): Promise<void>;
 }
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * Brings the schema up to SCHEMA_VERSION. Each step runs in its own exclusive transaction
@@ -103,6 +104,13 @@ export async function migrate(db: SqlDb): Promise<void> {
       await txn.execAsync('PRAGMA user_version = 4');
     });
   }
+  if (version < 5) {
+    // Logo picker. Nullable, so existing rows stay Automatic. The ALTER and the bump, one step.
+    await db.withExclusiveTransactionAsync(async (txn) => {
+      await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN logo TEXT');
+      await txn.execAsync('PRAGMA user_version = 5');
+    });
+  }
 }
 
 /** Logged actuals are stored as JSON [{date, amount}]; anything unreadable is dropped, never fatal. */
@@ -140,6 +148,7 @@ interface SubRow {
   cycle_weekday: number | null;
   variable: number | null;
   actuals: string | null;
+  logo: string | null;
   notes: string;
   manage_url: string;
   reminders_enabled: number;
@@ -184,6 +193,7 @@ export async function loadSnapshot(db: SqlExec): Promise<Snapshot> {
       totalPayments: r.total_payments ?? null,
       variable: !!r.variable,
       actuals: parseActuals(r.actuals),
+      logo: normalizeLogo(r.logo),
       categoryIds: byId.get(r.id) ?? [],
       notes: r.notes,
       manageUrl: r.manage_url,
@@ -200,14 +210,14 @@ export async function loadSnapshot(db: SqlExec): Promise<Snapshot> {
 export async function writeSub(db: SqlExec, s: Subscription): Promise<void> {
   await db.runAsync(
     `INSERT INTO subscriptions (id, name, amount, currency, cycle_unit, cycle_every, anchor_date, start_date,
-       trial_end_date, total_payments, cycle_weekday_nth, cycle_weekday, variable, actuals,
+       trial_end_date, total_payments, cycle_weekday_nth, cycle_weekday, variable, actuals, logo,
        notes, manage_url, reminders_enabled, cancelled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET name = excluded.name, amount = excluded.amount, currency = excluded.currency,
        cycle_unit = excluded.cycle_unit, cycle_every = excluded.cycle_every, anchor_date = excluded.anchor_date,
        start_date = excluded.start_date, trial_end_date = excluded.trial_end_date,
        total_payments = excluded.total_payments, cycle_weekday_nth = excluded.cycle_weekday_nth,
-       cycle_weekday = excluded.cycle_weekday, variable = excluded.variable, actuals = excluded.actuals, notes = excluded.notes, manage_url = excluded.manage_url,
+       cycle_weekday = excluded.cycle_weekday, variable = excluded.variable, actuals = excluded.actuals, logo = excluded.logo, notes = excluded.notes, manage_url = excluded.manage_url,
        reminders_enabled = excluded.reminders_enabled, cancelled = excluded.cancelled, updated_at = excluded.updated_at`,
     s.id,
     s.name,
@@ -223,6 +233,7 @@ export async function writeSub(db: SqlExec, s: Subscription): Promise<void> {
     s.cycle.weekday ? s.cycle.weekday.day : null,
     s.variable ? 1 : 0,
     s.actuals?.length ? JSON.stringify(s.actuals.map((a) => ({ date: a.date, amount: a.amount }))) : null,
+    normalizeLogo(s.logo),
     s.notes,
     s.manageUrl,
     s.remindersEnabled ? 1 : 0,
@@ -279,6 +290,7 @@ export async function importDraftsInto(
         totalPayments: d.totalPayments,
         variable: d.variable,
         actuals: d.actuals,
+        logo: d.logo,
         categoryIds,
         notes: d.notes,
         manageUrl: d.manageUrl,

@@ -15,6 +15,7 @@ export function sub(partial: Partial<Subscription> & { cycle?: Cycle } = {}): Su
     totalPayments: partial.totalPayments ?? null,
     variable: partial.variable ?? false,
     actuals: partial.actuals ?? [],
+    logo: partial.logo ?? null,
     categoryIds: partial.categoryIds ?? [],
     notes: partial.notes ?? '',
     manageUrl: partial.manageUrl ?? '',

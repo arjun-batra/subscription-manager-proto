@@ -67,6 +67,11 @@ export interface Subscription {
   variable?: boolean;
   /** Logged actual amounts for past charges, at most one per charge date. */
   actuals?: ActualCharge[];
+  /**
+   * Picked logo: `brand:<slug>`, `icon:<key>` or `icon:<key>:<colour>` (see domain/logo.ts).
+   * Null or absent: Automatic (match a brand by name, else a coloured first letter).
+   */
+  logo?: string | null;
   categoryIds: string[];
   notes: string;
   manageUrl: string;

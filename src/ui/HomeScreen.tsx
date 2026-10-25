@@ -239,7 +239,7 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
               ]}
             >
               <RNHostView matchContents>
-                <BrandLogo name={s.name} size={36} />
+                <BrandLogo name={s.name} logo={s.logo} size={36} />
               </RNHostView>
               <VStack alignment="leading" spacing={2}>
                 <HStack spacing={6}>
@@ -316,7 +316,7 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
       {items.map(({ s, model }, i) => (
         <Row
           key={s.id}
-          leading={<BrandLogo name={s.name} size={32} />}
+          leading={<BrandLogo name={s.name} logo={s.logo} size={32} />}
           title={model.title}
           badge={model.badge}
           subtitle={model.subtitle}

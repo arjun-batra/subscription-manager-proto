@@ -58,10 +58,13 @@ and [docs/decisions.md](docs/decisions.md) for the choices made.
 - A **Manage Subscription** link on each item that has a manage URL, plus a shortcut to Apple's subscriptions page.
 - **The look**: Home is a native iOS list (SwiftUI through `@expo/ui`): swipe left on a row to cancel or delete,
   swipe right to log an amount, or touch and hold for a menu (Edit, Log Amount, Manage, Mark Cancelled, Delete).
-  Each row has the service's logo (about 30 common ones are bundled in the app, see below) or a coloured first
-  letter, the totals card has a donut of average monthly spend by category with a text legend, the progress bar
+  Each row has a logo: a brand matched by name (77 bundled, including Canadian ones like Rogers, Sonnet and
+  Canada's Wonderland, see below), one you picked, a generic icon, or a coloured first letter, the totals card has a donut of average monthly spend by category with a text legend, the progress bar
   animates, and selecting or saving gives a light haptic tap. Categories and tabs use SF Symbols. The edit screen
   uses native segmented and menu pickers. Other platforms get the plain React Native version of the same screens.
+- **Logo picker**: the edit screen's **Logo** row opens a sheet with a search box and a grid: **Automatic (match
+  by name)** (the default), **Brands**, and **Generic icons** (about two dozen, such as electricity, phone, gym or
+  transit) with a colour row to recolour them. The pick is saved with the item and shown in the list.
 - Light and dark mode. Text colours meet WCAG AA (4.5:1), chart and logo colours meet 3:1, checked by unit tests.
 
 ## Open it on your iPhone with Expo Go
@@ -139,7 +142,7 @@ Layout:
 - `src/services/notifications.ts`: local notifications (`expo-notifications`). It never requests a push token.
 - `src/ui/`: screens and components. Pure helpers next to them (`look.ts` for logos, symbols and the donut,
   `rows.ts` for what a row says) are unit-tested; the SwiftUI views themselves are only checked on a device.
-- `src/ui/brands/`: bundled logo paths, see "Logos" below.
+- `src/ui/brands/`: bundled brand logos (`data.ts`, generated) and generic icons (`icons.ts`), see "Logos" below.
 - `npm run check:expo-go` also fails on `expo-dev-client`, any `app.config.*` file, and any dependency that isn't a
   module Expo Go ships at the version `npx expo install` picks (a short list of pure-JavaScript packages is allowed).
 
@@ -147,7 +150,7 @@ Layout:
 
 Header row, any column order, case-insensitive, extra columns are ignored:
 
-`name, amount, currency, cycle, next charge date, categories, notes, manage url, status, reminders, first charge date, trial end date, total payments, varies, actuals`
+`name, amount, currency, cycle, next charge date, categories, notes, manage url, status, reminders, first charge date, trial end date, total payments, varies, actuals, logo`
 
 - `cycle`: `weekly`, `monthly`, `quarterly`, `yearly`, or `every N days|weeks|months|years`. A monthly or
   every-N-months cycle can add a weekday rule: `monthly on the 2nd tue`, `every 2 months on the last friday`
@@ -168,6 +171,10 @@ Header row, any column order, case-insensitive, extra columns are ignored:
 - `actuals`: amounts logged for past charges of a `varies` row, as `date=amount` pairs separated by `;`, for
   example `2026-07-20=81.4; 2026-09-20=92.15`. Amounts are in the row's currency, with a `.` for decimals and no
   currency sign. Each date must be one of the row's charge dates and appear once. Export writes them oldest first
+- `logo` (or `icon`): blank or `auto` for Automatic, `brand:<slug>` (for example `brand:netflix`, `brand:rogers`)
+  or `icon:<key>` with an optional colour, `icon:bolt:amber`. Brand slugs are the `slug` values in
+  `src/ui/brands/data.ts`; icon keys and colours are in `src/ui/brands/icons.ts` (colours: red, amber, green, teal,
+  blue, indigo, purple, pink, graphite, brown). An unknown value makes the row invalid, with the reason shown
 - Files without the newer columns (older exports) still import: no trial, no plan, a fixed amount
 - Export puts `'` in front of any cell starting with `=`, `+`, `-` or `@` so spreadsheets don't run it as a
   formula. Import removes it again.
@@ -177,7 +184,28 @@ Use a CSV saved from Numbers, Excel or Google Sheets; `.xlsx` and `.numbers` fil
 
 ## Logos
 
-The brand marks in `src/ui/brands/data.ts` are SVG paths and colours copied from
-[Simple Icons](https://simpleicons.org) 16.36.0, released under CC0 1.0. They're bundled in the app and drawn with
-`react-native-svg`; nothing is downloaded. The names and logos are trademarks of their owners and are shown only to
-identify the service you typed. See [src/ui/brands/NOTICE.md](src/ui/brands/NOTICE.md).
+How an item's logo is picked:
+
+1. **Picked in the Logo sheet** (or a CSV `logo` value): that brand or generic icon.
+2. **Automatic** (the default, and what every item from before the picker uses): the name is matched against each
+   brand's aliases on whole leading words, ignoring case and accents. "Rogers Wireless", "Sonnet Insurance",
+   "Canada's Wonderland", "Prime", "ChatGPT Plus", "SuperGrok", "Gemini Advanced", "Office 365" and
+   "Xbox Game Pass" all match. A picked logo the app no longer has falls back to Automatic.
+3. **No match**: a coloured tile with the first letter.
+
+Brands come in two kinds:
+
+- **Marks**: SVG paths and colours copied from [Simple Icons](https://simpleicons.org) 16.36.0, released under
+  CC0 1.0, drawn with `react-native-svg` (42, for example Netflix, Cloudflare, Gemini, Claude, Google, Apple, CBC).
+- **Monograms**: brands Simple Icons doesn't carry, such as Rogers, Sonnet, Canada's Wonderland, Bell, Telus, Amazon,
+  Microsoft 365, Costco, Grok and ChatGPT (35). They're the brand's initials on its colour; no logo artwork is copied.
+
+Generic icons are SF Symbols (`expo-symbols`) on a coloured tile; each has a default colour and the picker can change
+it. White on every tile colour passes 4.5:1, and every brand tile's ink passes 3:1 (marks) or 4.5:1 (monograms),
+checked by unit tests. Everything is bundled; nothing is downloaded.
+
+`src/ui/brands/data.ts` is generated: unpack the `simple-icons` npm package (for example
+`npm pack simple-icons@16.36.0 && tar xzf simple-icons-16.36.0.tgz`) and run `node scripts/gen-brands.js package`.
+To add a brand, add it to the marks or monograms list in that script; it refuses a monogram for a brand Simple Icons
+has. The names and logos are trademarks of their owners and are shown only to identify the service. See
+[src/ui/brands/NOTICE.md](src/ui/brands/NOTICE.md).

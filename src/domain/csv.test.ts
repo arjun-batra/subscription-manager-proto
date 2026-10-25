@@ -52,6 +52,7 @@ describe('previewImport', () => {
       totalPayments: null,
       variable: false,
       actuals: [],
+      logo: null,
     });
   });
 
@@ -116,16 +117,16 @@ describe('toCsv', () => {
     const p = previewImport(toCsv(subs, cats), []);
     if (!p.ok) throw new Error(p.error);
     expect(p.rows.map((r) => r.draft)).toEqual([
-      { name: 'A, "quoted"', amount: 9.5, currency: 'CAD', cycle: { unit: 'week', every: 2 }, anchorDate: '2026-11-05', categoryNames: ['Streaming'], notes: 'line1\nline2', manageUrl: '', cancelled: false, remindersEnabled: true, startDate: null, trialEndDate: null, totalPayments: null, variable: false, actuals: [] },
-      { name: '=HYPERLINK("x")', amount: 100, currency: 'CAD', cycle: { unit: 'year', every: 1 }, anchorDate: '2027-01-31', categoryNames: [], notes: '-5 off, @promo', manageUrl: '', cancelled: true, remindersEnabled: false, startDate: '2027-01-31', trialEndDate: null, totalPayments: null, variable: false, actuals: [] },
+      { name: 'A, "quoted"', amount: 9.5, currency: 'CAD', cycle: { unit: 'week', every: 2 }, anchorDate: '2026-11-05', categoryNames: ['Streaming'], notes: 'line1\nline2', manageUrl: '', cancelled: false, remindersEnabled: true, startDate: null, trialEndDate: null, totalPayments: null, variable: false, actuals: [], logo: null },
+      { name: '=HYPERLINK("x")', amount: 100, currency: 'CAD', cycle: { unit: 'year', every: 1 }, anchorDate: '2027-01-31', categoryNames: [], notes: '-5 off, @promo', manageUrl: '', cancelled: true, remindersEnabled: false, startDate: '2027-01-31', trialEndDate: null, totalPayments: null, variable: false, actuals: [], logo: null },
     ]);
   });
 
   it('exports the cancelled flag and reminder setting', () => {
     const csv = toCsv([sub({ name: 'Old', cancelled: true, remindersEnabled: false })], []);
     const [header, row] = csv.split('\r\n');
-    expect(header).toBe('name,amount,currency,cycle,next charge date,categories,notes,manage url,status,reminders,first charge date,trial end date,total payments,varies,actuals');
-    expect(row.split(',').slice(-7)).toEqual(['cancelled', 'off', '', '', '', '', '']);
+    expect(header).toBe('name,amount,currency,cycle,next charge date,categories,notes,manage url,status,reminders,first charge date,trial end date,total payments,varies,actuals,logo');
+    expect(row.split(',').slice(-8)).toEqual(['cancelled', 'off', '', '', '', '', '', '']);
   });
 
   it('guards cells a spreadsheet would run as formulas', () => {
@@ -169,5 +170,45 @@ describe('toCsv', () => {
   it('rejects unknown status or reminders values', () => {
     const p = previewImport('name,amount,currency,cycle,next charge date,status,reminders\nA,1,CAD,monthly,2026-11-01,paused,maybe', []);
     expect(p.ok && p.rows[0]).toMatchObject({ status: 'invalid', reason: 'status must be active or cancelled; reminders must be on or off' });
+  });
+
+  it('round-trips picked logos and leaves Automatic blank', () => {
+    const subs = [
+      sub({ name: 'Phone', logo: 'brand:rogers' }),
+      sub({ name: 'Hydro', logo: 'icon:bolt:amber' }),
+      sub({ name: 'Netflix', logo: null }),
+      sub({ name: 'Old', logo: 'brand:gone' }),
+    ];
+    const csv = toCsv(subs, []);
+    expect(csv.trimEnd().split('\r\n').slice(1).map((r) => r.split(',').pop())).toEqual(['brand:rogers', 'icon:bolt:amber', '', '']);
+    const p = previewImport(csv, []);
+    if (!p.ok) throw new Error(p.error);
+    expect(p.rows.map((r) => r.draft?.logo)).toEqual(['brand:rogers', 'icon:bolt:amber', null, null]);
+  });
+
+  it('reads a logo or icon column in any case and rejects unknown logos', () => {
+    const p = previewImport(
+      'name,amount,currency,cycle,next charge date,Icon\n' +
+        'A,1,CAD,monthly,2026-11-01,Brand:Netflix\n' +
+        'B,1,CAD,monthly,2026-11-01,auto\n' +
+        'C,1,CAD,monthly,2026-11-01,brand:myspace\n' +
+        'D,1,CAD,monthly,2026-11-01,icon:bolt:chartreuse',
+      [],
+    );
+    if (!p.ok) throw new Error(p.error);
+    expect(p.rows.map((r) => [r.status, r.draft?.logo ?? null])).toEqual([
+      ['valid', 'brand:netflix'],
+      ['valid', null],
+      ['invalid', null],
+      ['invalid', null],
+    ]);
+    expect(p.rows[2].reason).toMatch(/myspace/);
+  });
+
+  it('template logos are all valid', () => {
+    const p = previewImport(CSV_TEMPLATE, []);
+    if (!p.ok) throw new Error(p.error);
+    expect(p.rows.filter((r) => r.status === 'invalid')).toEqual([]);
+    expect(p.rows.map((r) => r.draft?.logo).filter(Boolean)).toEqual(['icon:phone', 'icon:bolt:amber', 'icon:book']);
   });
 });

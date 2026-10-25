@@ -1,7 +1,7 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useState } from 'react';
 import * as Haptics from 'expo-haptics';
-import { Alert, KeyboardAvoidingView, Linking, Platform, ScrollView, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 
 import { newId } from '../data/db';
 import {
@@ -32,7 +32,10 @@ import {
 } from '../domain/schedule';
 import { trialLeadsPassed } from '../domain/reminders';
 import type { Cycle, Subscription, Weekday, WeekdayRule } from '../domain/types';
+import { BrandLogo } from './BrandLogo';
 import { Button, Card, Chip, Field, Row, SectionHeader } from './components';
+import { logoSummary } from './look';
+import { LogoPicker } from './LogoPicker';
 import { MenuPicker, Segmented } from './native';
 import { mergeActuals } from './rows';
 import { useStore } from './store';
@@ -111,6 +114,8 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
   const [totalPayments, setTotalPayments] = useState(initialPlan ? String(initialPlan.total) : '');
   const [lastPayment, setLastPayment] = useState(() => (existing && isPlan(existing) ? planEndDate(existing)! : store.today));
   const [variable, setVariable] = useState(existing?.variable ?? false);
+  const [logo, setLogo] = useState<string | null>(existing?.logo ?? null);
+  const [pickingLogo, setPickingLogo] = useState(false);
   /** Amounts typed for past charges, by date ('' clears one). Only edited dates are here. */
   const [typedActuals, setTypedActuals] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -198,6 +203,7 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
       cancelled,
       variable: isVariableBill,
       actuals: isVariableBill ? (existing?.actuals ?? []) : [],
+      logo,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
@@ -272,6 +278,7 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
         </Text>
         <Button title="Save" onPress={save} disabled={saving} />
       </View>
+      <LogoPicker visible={pickingLogo} name={name} value={logo} onPick={setLogo} onClose={() => setPickingLogo(false)} />
       <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 48 }}>
         <Segmented<Kind>
           label="Kind"
@@ -291,6 +298,20 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
             error={errors.name}
             autoFocus={!existing}
           />
+          <Pressable
+            onPress={() => setPickingLogo(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`Logo, ${logoSummary(name, logo)}`}
+            accessibilityHint="Opens the logo picker"
+            style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: p.separator }}
+          >
+            <Text style={{ color: p.text, fontSize: 17, flex: 1 }}>Logo</Text>
+            <Text style={{ color: p.secondaryText, fontSize: 15, marginRight: 8, flexShrink: 1 }} numberOfLines={1}>
+              {logoSummary(name, logo)}
+            </Text>
+            <BrandLogo name={name} logo={logo} size={32} />
+            <Text style={{ color: p.secondaryText, fontSize: 20, marginLeft: 8 }}>›</Text>
+          </Pressable>
           <Field
             label={
               kind === 'plan'

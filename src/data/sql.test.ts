@@ -95,6 +95,7 @@ const draft = (over: Partial<ImportDraft> = {}): ImportDraft => ({
   totalPayments: null,
   variable: false,
   actuals: [],
+  logo: null,
   ...over,
 });
 
@@ -336,7 +337,7 @@ describe('migration to v4 (weekday schedules and variable bills)', () => {
     const db = nodeDb();
     db.raw.exec(V3_SCHEMA);
     await migrate(db);
-    expect(userVersion(db)).toBe(4);
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
     expect(columns(db)).toEqual(expect.arrayContaining(['cycle_weekday_nth', 'cycle_weekday', 'variable', 'actuals']));
     const snap = await loadSnapshot(db);
     expect(snap.settings.homeCurrency).toBe('USD');
@@ -350,8 +351,8 @@ describe('migration to v4 (weekday schedules and variable bills)', () => {
     const db = nodeDb();
     db.raw.exec(V1_SCHEMA);
     await migrate(db);
-    expect(userVersion(db)).toBe(4);
-    expect((await loadSnapshot(db)).subscriptions[0]).toMatchObject({ name: 'Netflix', variable: false, actuals: [] });
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
+    expect((await loadSnapshot(db)).subscriptions[0]).toMatchObject({ name: 'Netflix', variable: false, actuals: [], logo: null });
   });
 
   it.each([/cycle_weekday_nth/, /ADD COLUMN cycle_weekday INTEGER/, /ADD COLUMN variable/, /ADD COLUMN actuals/, /user_version = 4/])(
@@ -377,7 +378,7 @@ describe('migration to v4 (weekday schedules and variable bills)', () => {
       expect(userVersion(db)).toBe(3);
       for (const c of ['cycle_weekday_nth', 'cycle_weekday', 'variable', 'actuals']) expect(columns(db)).not.toContain(c);
       await migrate(db);
-      expect(userVersion(db)).toBe(4);
+      expect(userVersion(db)).toBe(SCHEMA_VERSION);
       expect(columns(db).filter((c) => c === 'variable')).toHaveLength(1);
       expect((await loadSnapshot(db)).subscriptions).toHaveLength(4);
     },
@@ -412,6 +413,69 @@ describe('migration to v4 (weekday schedules and variable bills)', () => {
     expect((await loadSnapshot(db)).subscriptions[0].actuals).toEqual([]);
     db.raw.exec(`UPDATE subscriptions SET actuals = '[{"date":"2026-09-20","amount":"x"},{"date":"2026-10-20","amount":90}]'`);
     expect((await loadSnapshot(db)).subscriptions[0].actuals).toEqual([{ date: '2026-10-20', amount: 90 }]);
+  });
+});
+
+const V4_SCHEMA = `${V3_SCHEMA.replace('PRAGMA user_version = 3;', '')}
+  ALTER TABLE subscriptions ADD COLUMN cycle_weekday_nth INTEGER;
+  ALTER TABLE subscriptions ADD COLUMN cycle_weekday INTEGER;
+  ALTER TABLE subscriptions ADD COLUMN variable INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE subscriptions ADD COLUMN actuals TEXT;
+  UPDATE subscriptions SET variable = 1, actuals = '[{"date":"2026-10-10","amount":51}]' WHERE id = 's3';
+  PRAGMA user_version = 4;
+`;
+
+describe('migration to v5 (logo picker)', () => {
+  it('upgrades a version 4 database; every existing item stays Automatic and keeps its data', async () => {
+    const db = nodeDb();
+    db.raw.exec(V4_SCHEMA);
+    await migrate(db);
+    expect(userVersion(db)).toBe(5);
+    expect(columns(db)).toContain('logo');
+    const snap = await loadSnapshot(db);
+    expect(snap.subscriptions).toHaveLength(4);
+    expect(snap.subscriptions.every((x) => x.logo === null)).toBe(true);
+    expect(snap.subscriptions.find((x) => x.id === 's3')).toMatchObject({ variable: true, actuals: [{ date: '2026-10-10', amount: 51 }] });
+  });
+
+  it.each([/ADD COLUMN logo/, /user_version = 5/])('rolls back a crash at %s to v4, then retries cleanly', async (at) => {
+    const db = nodeDb();
+    db.raw.exec(V4_SCHEMA);
+    const first: SqlDb = {
+      ...db,
+      async withExclusiveTransactionAsync(task) {
+        return db.withExclusiveTransactionAsync(async (txn) => {
+          await task({
+            ...txn,
+            async execAsync(source: string) {
+              if (at.test(source)) throw new Error('app killed (simulated)');
+              await txn.execAsync(source);
+            },
+          });
+        });
+      },
+    };
+    await expect(migrate(first)).rejects.toThrow('app killed (simulated)');
+    expect(userVersion(db)).toBe(4);
+    expect(columns(db)).not.toContain('logo');
+    await migrate(db);
+    expect(userVersion(db)).toBe(5);
+    expect(columns(db).filter((c) => c === 'logo')).toHaveLength(1);
+  });
+
+  it('saves, changes and clears a picked logo; unreadable values load as Automatic', async () => {
+    const db = nodeDb();
+    await migrate(db);
+    await importDraftsInto(db, [draft({ name: 'My phone', logo: 'brand:rogers' }), draft({ name: 'Hydro', logo: 'icon:bolt:teal' })], makeId);
+    let snap = await loadSnapshot(db);
+    const phone = snap.subscriptions.find((x) => x.name === 'My phone')!;
+    expect(phone.logo).toBe('brand:rogers');
+    expect(snap.subscriptions.find((x) => x.name === 'Hydro')!.logo).toBe('icon:bolt:teal');
+    await db.withExclusiveTransactionAsync((txn) => writeSub(txn, { ...phone, logo: null }));
+    snap = await loadSnapshot(db);
+    expect(snap.subscriptions.find((x) => x.name === 'My phone')!.logo).toBeNull();
+    db.raw.exec(`UPDATE subscriptions SET logo = 'brand:no-such-brand'`);
+    expect((await loadSnapshot(db)).subscriptions.every((x) => x.logo === null)).toBe(true);
   });
 });
 
