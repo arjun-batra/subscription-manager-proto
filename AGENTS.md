@@ -1,41 +1,31 @@
-This is an Expo/React Native mobile application. Prioritize mobile-first patterns, performance, and cross-platform compatibility.
+# AGENTS.md: rules for anyone (human or bot) working in this repo
 
-## Expo has changed — do not trust your training data
+This is a **Prototype-track** Expo app (one week, $0). Keep it light: ship working software, not paperwork.
 
-Expo ships breaking changes every SDK release. APIs you remember are likely renamed, moved, or removed. Before writing any code that touches an Expo, EAS, or React Native API:
+## Hard rules
 
-1. Read the major version of the `expo` package in `package.json`.
-2. Fetch the matching versioned docs: `https://docs.expo.dev/versions/v<major>.0.0/`
-3. For anything else, fetch https://docs.expo.dev/llms.txt — an index of all Expo docs with corrections to common LLM misconceptions. Follow its links to the specific page you need; never answer from memory.
+1. **Privacy: the app makes no network calls.** No analytics, crash reporting, ads, push tokens, remote config,
+   rate APIs or backend. `npm run check:no-network` enforces this in CI; don't weaken it. Opening a manage URL in
+   the browser is the only exception.
+2. **Data stays on the device** (`expo-sqlite`). Schema changes bump `SCHEMA_VERSION` in `src/data/db.ts` with a
+   migration step. Never drop user data.
+3. **Expo Go compatible.** Only use modules bundled in Expo Go for the current SDK (58). Add packages with
+   `npx expo install <pkg>`, never plain `npm install`. No custom native code and no `ios/` or `android/` folders.
+4. **Logic lives in `src/domain/` as pure TypeScript** with Jest tests. Dates, totals, reminder selection and CSV
+   parsing must stay free of React Native imports so they can be tested on Linux CI.
+5. **Reminders stay within iOS's 64 pending limit**: at most `RENEWAL_BUDGET` (60) renewal reminders plus the test one.
+6. **Accessibility:** new colours go in `src/ui/palette.ts` and must pass the WCAG AA test in both light and dark.
+7. **Never claim it works without running it.** Before you push: `npx expo lint`, `npx tsc --noEmit`, `npx jest`,
+   `npm run check:no-network`, and `npx expo export --platform ios`. Device-only behaviour (notifications firing,
+   persistence across launches) must be checked on the iPhone and reported as such.
 
-## Commands
+## Workflow
 
-Use `bunx` instead of `npx` if the project uses bun (`bun.lock` present).
+- Work on a feature branch, push early and often (nothing should live only on one computer), and open a PR to `main`.
+- A **separate reviewer** must approve, and CI must be green, before merge. Authors don't review their own PRs.
+- Log notable choices in `docs/decisions.md` (one or two lines each). No gate documents.
+- Don't publish EAS Updates, create tokens or change the Expo project without Arjun's OK.
 
-```bash
-npx expo install <package>  # ALWAYS use instead of npm/yarn/pnpm/bun add — resolves SDK-compatible versions
-npx expo start              # start the dev server
-npx expo lint               # lint
-npx tsc --noEmit            # typecheck
-npx expo-doctor             # diagnose dependency and config issues
-npx expo install --fix      # fix incompatible package versions
-```
+## Expo docs
 
-Run lint and typecheck before declaring any task done.
-
-## Navigation & Routing
-
-- Use **Expo Router** for all navigation. Routes live in `src/app/` — every file there is a screen, `_layout.tsx` files define navigators. Keep non-route code (components, hooks, utils) outside `src/app/`.
-- Import `Link`, `router`, and `useLocalSearchParams` from `expo-router`.
-- Docs: https://docs.expo.dev/router/introduction.md
-
-## Building with EAS
-
-Use EAS to build, sign, and submit the app in the cloud (`eas build`, `eas submit`) and to ship over-the-air updates (`eas update`) — no local Xcode or Android Studio required. Run EAS CLI as `bunx eas-cli <command>` in Bun projects, or `npx eas-cli@latest <command>` otherwise; substitute that for bare `eas` in docs examples.
-Docs: https://docs.expo.dev/eas/index.md
-
-## Rules
-
-- If `ios/` and `android/` directories do not exist, they are generated (Continuous Native Generation). Never create or edit them by hand — configure native behavior in `app.json` and config plugins.
-- Expo Go only includes its bundled native modules. After adding a library with native code, the app needs a development build: `npx expo run:ios|android` locally, or `eas build --profile development`.
-- Prefer recommended Expo modules over third-party libraries, and check your available skills before adding dependencies. Docs: https://docs.expo.dev/versions/latest/index.md
+Expo changes every SDK. Check the versioned docs for SDK 58 (https://docs.expo.dev/versions/v58.0.0/) rather than memory.
