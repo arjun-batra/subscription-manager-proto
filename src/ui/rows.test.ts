@@ -1,5 +1,6 @@
 import { sub } from '../domain/fixtures';
-import { amountLabel, chargeToLog, mergeActuals, parseAmount, upcomingRow } from './rows';
+import type { PaidEntry } from '../domain/totals';
+import { amountLabel, chargeToLog, mergeActuals, paidRow, parseAmount, upcomingRow } from './rows';
 
 const today = '2026-10-25';
 
@@ -93,5 +94,47 @@ describe('mergeActuals (edit screen)', () => {
   it('drops actuals that are no longer charge dates after a schedule change', () => {
     const moved = { ...base, anchorDate: '2026-08-21' };
     expect(mergeActuals(moved, {})).toEqual({ actuals: [], dropped: ['2026-08-20', '2026-09-20'] });
+  });
+});
+
+describe('Paid this month rows', () => {
+  const entry = (over: Partial<PaidEntry> & { sub: PaidEntry['sub'] }): PaidEntry => ({
+    chargeDate: '2026-10-05',
+    paidOn: '2026-10-05',
+    amount: over.sub.amount,
+    homeAmount: over.sub.amount,
+    estimated: false,
+    record: null,
+    early: false,
+    ...over,
+  });
+
+  it('looks like an Upcoming row: day paid · schedule, amount on the right', () => {
+    const r = paidRow(entry({ sub: sub({ name: 'Netflix', amount: 16.49 }) }), today);
+    expect(r).toMatchObject({ title: 'Netflix', subtitle: 'Oct 5 · Monthly', right: 'CA$16.49' });
+    expect(r.badge).toBeUndefined();
+    expect(paidRow(entry({ sub: sub({ amount: 3 }), paidOn: today, chargeDate: today }), today).subtitle).toBe('Today · Monthly');
+  });
+
+  it('notes an early payment quietly, and a late one by its charge date', () => {
+    const s = sub({ name: 'Spotify', amount: 11.99 });
+    const early = paidRow(entry({ sub: s, chargeDate: '2026-11-02', paidOn: '2026-10-20', early: true, record: { date: '2026-11-02', paidOn: '2026-10-20', amount: 11.99 } }), today);
+    expect(early.subtitle).toBe('Oct 20 · Monthly · paid early, due Nov 2');
+    const late = paidRow(entry({ sub: s, chargeDate: '2026-09-30', paidOn: '2026-10-02', record: { date: '2026-09-30', paidOn: '2026-10-02', amount: 11.99 } }), today);
+    expect(late.subtitle).toBe('Oct 2 · Monthly · for Sep 30');
+  });
+
+  it('variable: actual plainly, estimate with "about"; Varies, Promo and Plan badges', () => {
+    const hydro = sub({ name: 'Hydro', amount: 85, variable: true });
+    expect(paidRow(entry({ sub: hydro, amount: 97.12 }), today)).toMatchObject({ right: 'CA$97.12', badge: { label: 'Varies' } });
+    expect(paidRow(entry({ sub: hydro, amount: 80, estimated: true }), today).right).toBe('about CA$80.00');
+    const promo = sub({ name: 'Rogers', amount: 85, promoEndDate: '2027-01-15', regularAmount: 110 });
+    expect(paidRow(entry({ sub: promo }), today).badge).toEqual({ label: 'Promo', tone: 'neutral' });
+    const plan = sub({ name: 'Phone', amount: 50, anchorDate: '2026-08-05', startDate: '2026-08-05', totalPayments: 6 });
+    expect(paidRow(entry({ sub: plan }), today)).toMatchObject({ subtitle: 'Oct 5 · Payment 3 of 6', badge: { label: 'Plan' } });
+  });
+
+  it('says when the item was cancelled since', () => {
+    expect(paidRow(entry({ sub: sub({ amount: 9, cancelled: true }) }), today).subtitle).toBe('Oct 5 · Monthly · cancelled since');
   });
 });

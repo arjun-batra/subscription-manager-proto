@@ -42,7 +42,7 @@ import { BrandLogo } from './BrandLogo';
 import { CategoryFilter } from './CategoryFilter';
 import { Button, Card, Row, SectionHeader } from './components';
 import { donutSlices, filterOptions } from './look';
-import { amountLabel, chargeToLog, deadlineRows, parseAmount, upcomingRow, type RowModel } from './rows';
+import { amountLabel, chargeToLog, deadlineRows, paidRow, parseAmount, upcomingRow, type RowModel } from './rows';
 import { SWIPE_COLORS } from './palette';
 import { useStore } from './store';
 import { TotalsCard } from './TotalsCard';
@@ -57,6 +57,17 @@ interface ListItem {
   /** Rows in the Deadlines section repeat an item, so they need their own key. */
   key?: string;
 }
+
+/** A "Paid this month" row: undoDate is the marked charge Undo Paid reverts (null if not marked). */
+interface PaidItem {
+  s: Subscription;
+  model: RowModel;
+  key: string;
+  undoDate: string | null;
+}
+
+/** "Paid this month" shows the most recent few; the rest are one tap away. */
+const PAID_PREVIEW = 5;
 
 /** How long the "Marked paid · Undo" bar stays up. */
 const UNDO_MS = 8000;
@@ -108,6 +119,20 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
         },
       };
     });
+  const paidItems: PaidItem[] = useMemo(
+    () =>
+      month.paid.map((e) => ({
+        s: e.sub,
+        model: paidRow(e, today),
+        key: `paid:${e.sub.id}:${e.chargeDate}`,
+        undoDate: e.record ? e.record.date : null,
+      })),
+    [month, today],
+  );
+  const [showAllPaid, setShowAllPaid] = useState(false);
+  const paidShown = showAllPaid ? paidItems : paidItems.slice(0, PAID_PREVIEW);
+  const paidMore = paidItems.length > PAID_PREVIEW ? (showAllPaid ? 'Show Fewer' : `Show All ${paidItems.length}`) : null;
+  const paidEmpty = { title: 'Nothing paid yet this month', body: 'Charges move here once their date passes or you mark them paid.' };
   const deadlines: ListItem[] = deadlineRows(shown, today).map((d) => ({ s: d.s, model: d.model, key: `${d.kind}:${d.s.id}` }));
   const [undo, setUndo] = useState<{ id: string; date: string; text: string } | null>(null);
   useEffect(() => {
@@ -228,6 +253,15 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
     return date ? `Mark Paid (${date === today ? 'today' : shortDate(date, today)})` : null;
   }
 
+  /** Touch and hold on a "Paid this month" row (plain list). */
+  function paidActions({ s, undoDate }: PaidItem) {
+    Alert.alert(s.name, undefined, [
+      ...(undoDate ? [{ text: `Undo Paid (${shortDate(undoDate, today)})`, onPress: () => void undoPaid(s.id, undoDate) }] : []),
+      { text: 'Edit', onPress: () => onEdit(s) },
+      { text: 'Close', style: 'cancel' as const },
+    ]);
+  }
+
   /** The plain list has no context menu: touch and hold opens the same actions. */
   function moreActions(s: Subscription) {
     const paidLabel = markPaidLabel(s);
@@ -314,6 +348,78 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
     );
 
   if (NATIVE_LIST) {
+    /** Logo, name and badge, date line, amount: shared by every section. */
+    const rowBody = (s: Subscription, model: RowModel) => (
+      <HStack
+        spacing={12}
+        modifiers={[
+          contentShape(shapes.rectangle()),
+          onTapGesture(() => onEdit(s)),
+          accessibilityElement('combine'),
+          accessibilityLabel(model.accessibilityLabel),
+        ]}
+      >
+        <RNHostView matchContents>
+          <BrandLogo name={s.name} logo={s.logo} size={36} />
+        </RNHostView>
+        <VStack alignment="leading" spacing={2}>
+          <HStack spacing={6}>
+            <UIText modifiers={[font({ textStyle: 'body' }), foregroundStyle(p.text), lineLimit(1)]}>{model.title}</UIText>
+            {model.badge ? (
+              <UIText
+                modifiers={[
+                  font({ textStyle: 'caption', weight: 'semibold' }),
+                  foregroundStyle(model.badge.tone === 'trial' ? p.warningText : p.chipText),
+                  padding({ leading: 6, trailing: 6, top: 2, bottom: 2 }),
+                  background(model.badge.tone === 'trial' ? p.warningBg : p.chipBg, shapes.roundedRectangle({ cornerRadius: 6 })),
+                ]}
+              >
+                {model.badge.label}
+              </UIText>
+            ) : null}
+          </HStack>
+          <UIText modifiers={[font({ textStyle: 'subheadline' }), foregroundStyle(p.secondaryText), lineLimit(2)]}>
+            {model.subtitle}
+          </UIText>
+        </VStack>
+        <Spacer />
+        <UIText modifiers={[font({ textStyle: 'body' }), foregroundStyle(p.text), monospacedDigit()]}>{model.right}</UIText>
+      </HStack>
+    );
+
+    const paidNativeRow = (item: PaidItem) => {
+      const { s, model, key, undoDate } = item;
+      const menu = (
+        <ContextMenu key={undoDate ? undefined : key}>
+          <ContextMenu.Items>
+            <UIButton label="Edit" systemImage="pencil" onPress={() => onEdit(s)} />
+            {undoDate ? (
+              <UIButton
+                label={`Undo Paid (${shortDate(undoDate, today)})`}
+                systemImage="arrow.uturn.backward.circle"
+                onPress={() => void undoPaid(s.id, undoDate)}
+              />
+            ) : null}
+          </ContextMenu.Items>
+          <ContextMenu.Trigger>{rowBody(s, model)}</ContextMenu.Trigger>
+        </ContextMenu>
+      );
+      if (!undoDate) return menu;
+      return (
+        <SwipeActions key={key}>
+          {menu}
+          <SwipeActions.Actions edge="leading">
+            <UIButton
+              label="Undo"
+              systemImage="arrow.uturn.backward.circle"
+              onPress={() => void undoPaid(s.id, undoDate)}
+              modifiers={[tint(SWIPE_COLORS.undo)]}
+            />
+          </SwipeActions.Actions>
+        </SwipeActions>
+      );
+    };
+
     const row = ({ s, model, key }: ListItem) => {
       const paidLabel = markPaidLabel(s);
       const undoable = undoablePayment(s, today);
@@ -341,43 +447,7 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
             />
             <UIButton label="Delete" systemImage="trash" role="destructive" onPress={() => confirmDelete(s)} />
           </ContextMenu.Items>
-          <ContextMenu.Trigger>
-            <HStack
-              spacing={12}
-              modifiers={[
-                contentShape(shapes.rectangle()),
-                onTapGesture(() => onEdit(s)),
-                accessibilityElement('combine'),
-                accessibilityLabel(model.accessibilityLabel),
-              ]}
-            >
-              <RNHostView matchContents>
-                <BrandLogo name={s.name} logo={s.logo} size={36} />
-              </RNHostView>
-              <VStack alignment="leading" spacing={2}>
-                <HStack spacing={6}>
-                  <UIText modifiers={[font({ textStyle: 'body' }), foregroundStyle(p.text), lineLimit(1)]}>{model.title}</UIText>
-                  {model.badge ? (
-                    <UIText
-                      modifiers={[
-                        font({ textStyle: 'caption', weight: 'semibold' }),
-                        foregroundStyle(model.badge.tone === 'trial' ? p.warningText : p.chipText),
-                        padding({ leading: 6, trailing: 6, top: 2, bottom: 2 }),
-                        background(model.badge.tone === 'trial' ? p.warningBg : p.chipBg, shapes.roundedRectangle({ cornerRadius: 6 })),
-                      ]}
-                    >
-                      {model.badge.label}
-                    </UIText>
-                  ) : null}
-                </HStack>
-                <UIText modifiers={[font({ textStyle: 'subheadline' }), foregroundStyle(p.secondaryText), lineLimit(2)]}>
-                  {model.subtitle}
-                </UIText>
-              </VStack>
-              <Spacer />
-              <UIText modifiers={[font({ textStyle: 'body' }), foregroundStyle(p.text), monospacedDigit()]}>{model.right}</UIText>
-            </HStack>
-          </ContextMenu.Trigger>
+          <ContextMenu.Trigger>{rowBody(s, model)}</ContextMenu.Trigger>
         </ContextMenu>
         <SwipeActions.Actions edge="trailing" allowsFullSwipe={false}>
           <UIButton label="Delete" systemImage="trash" role="destructive" onPress={() => confirmDelete(s)} modifiers={[tint(SWIPE_COLORS.delete)]} />
@@ -420,6 +490,31 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
                 active.map(row)
               )}
             </Section>
+            {shown.length ? (
+              <Section title="Paid this month">
+                {paidItems.length === 0 ? (
+                  <VStack alignment="leading" spacing={4}>
+                    <UIText modifiers={[font({ textStyle: 'headline' }), foregroundStyle(p.text)]}>{paidEmpty.title}</UIText>
+                    <UIText modifiers={[font({ textStyle: 'subheadline' }), foregroundStyle(p.secondaryText)]}>{paidEmpty.body}</UIText>
+                  </VStack>
+                ) : (
+                  paidShown.map(paidNativeRow)
+                )}
+                {paidMore ? (
+                  <HStack
+                    modifiers={[
+                      contentShape(shapes.rectangle()),
+                      onTapGesture(() => setShowAllPaid((v) => !v)),
+                      accessibilityElement('combine'),
+                      accessibilityLabel(paidMore),
+                    ]}
+                  >
+                    <UIText modifiers={[font({ textStyle: 'body' }), foregroundStyle(p.accent)]}>{paidMore}</UIText>
+                    <Spacer />
+                  </HStack>
+                ) : null}
+              </Section>
+            ) : null}
             {deadlines.length ? <Section title="Deadlines">{deadlines.map(row)}</Section> : null}
             {completed.length ? <Section title="Completed plans">{completed.map(row)}</Section> : null}
             {cancelled.length ? <Section title="Cancelled">{cancelled.map(row)}</Section> : null}
@@ -466,6 +561,39 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
       ) : (
         rnRows(active)
       )}
+      {shown.length ? (
+        <>
+          <SectionHeader>Paid this month</SectionHeader>
+          {paidItems.length === 0 ? (
+            <Card style={{ padding: 20, alignItems: 'center' }}>
+              <Text style={{ color: p.text, fontSize: 17, fontWeight: '600' }}>{paidEmpty.title}</Text>
+              <Text style={{ color: p.secondaryText, fontSize: 15, marginTop: 4, textAlign: 'center' }}>{paidEmpty.body}</Text>
+            </Card>
+          ) : (
+            <Card>
+              {paidShown.map((item, i) => (
+                <Row
+                  key={item.key}
+                  leading={<BrandLogo name={item.s.name} logo={item.s.logo} size={32} />}
+                  title={item.model.title}
+                  badge={item.model.badge}
+                  subtitle={item.model.subtitle}
+                  right={item.model.right}
+                  onPress={() => onEdit(item.s)}
+                  onLongPress={() => paidActions(item)}
+                  accessibilityLabel={item.model.accessibilityLabel}
+                  last={i === paidShown.length - 1}
+                />
+              ))}
+            </Card>
+          )}
+          {paidMore ? (
+            <Pressable onPress={() => setShowAllPaid((v) => !v)} accessibilityRole="button" hitSlop={8} style={{ paddingHorizontal: 20, paddingTop: 8 }}>
+              <Text style={{ color: p.accent, fontSize: 15, fontWeight: '600' }}>{paidMore}</Text>
+            </Pressable>
+          ) : null}
+        </>
+      ) : null}
       {deadlines.length ? (
         <>
           <SectionHeader>Deadlines</SectionHeader>

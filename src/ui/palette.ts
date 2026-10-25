@@ -60,6 +60,8 @@ export const SWIPE_COLORS = {
   log: '#0062CC',
   cancel: '#A34700',
   delete: '#B3261E',
+  /** Undo Paid on a "Paid this month" row (iOS indigo, 5.6:1). */
+  undo: '#5856D6',
 } as const;
 
 /** The swipe-action label colour iOS uses, in both modes. */

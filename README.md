@@ -39,9 +39,13 @@ and [docs/decisions.md](docs/decisions.md) for the choices made.
   following charge and that charge's reminder is cancelled. An **Undo** banner shows for a few seconds, and the menu
   has **Undo Paid** afterwards. For bills that vary you can type what you paid (leave it blank to use the estimate).
   Marking a plan's last payment early completes the plan.
-- **Paid in <month>**: the home card shows what has gone out this calendar month in your home currency (past charges plus
-  anything you marked paid this month, early payments included; actual amounts for bills that vary, $0 for trials
-  until they end, each plan instalment). It sits next to "Paid so far", which counts this month's charges by due date.
+- **Paid this month**: a Home section under Upcoming, laid out the same way, lists every charge already billed this
+  calendar month (its date has passed) and everything you marked paid this month, newest first. Payments made early
+  say "paid early, due <date>"; bills that vary show the amount you logged, else "about" the estimate; trials appear
+  once their first paid charge has passed; each plan instalment is its own row. It follows the category filter. Tap a
+  row to open the item; swipe right (or touch and hold) for **Undo Paid** on a marked one. The five most recent show
+  first, with **Show All** for the rest. **Paid so far** on the card is the total of this list (in your home
+  currency), and **This month** is paid so far plus still due.
 - **Promo prices and cancel-by dates**: under **Deals and deadlines** on the edit screen, set **Promo price ends**
   (the regular price and the date it starts, e.g. Rogers after 12 months) and/or **Cancel by** (a trial or anything
   with a cancellation deadline). Totals use the regular price from that date, the card shows "After the promo
