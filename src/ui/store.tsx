@@ -23,6 +23,9 @@ interface StoreValue {
   saveSettings(s: Settings): Promise<void>;
   importDrafts(d: ImportDraft[]): Promise<number>;
   refresh(): Promise<void>;
+  /** Home's category filter: null is All. Kept in memory only, so it resets on the next launch. */
+  categoryFilter: string | null;
+  setCategoryFilter(id: string | null): void;
 }
 
 const Ctx = createContext<StoreValue | null>(null);
@@ -34,6 +37,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [today, setToday] = useState(() => toLocalDate(new Date()));
   const [health, setHealth] = useState<ReminderHealth>({ ok: true });
   const snapRef = useRef(snap);
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
 
   const resync = useCallback(async (s: db.Snapshot) => {
     try {
@@ -102,8 +106,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       saveSettings: wrap(db.saveSettings),
       importDrafts: wrap(db.importDrafts),
       refresh,
+      categoryFilter,
+      setCategoryFilter,
     }),
-    [ready, error, snap, today, health, wrap, refresh],
+    [ready, error, snap, today, health, wrap, refresh, categoryFilter],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

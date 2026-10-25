@@ -26,8 +26,13 @@ export function Row({
   accessibilityLabel,
   danger,
   badge,
+  leading,
+  onLongPress,
 }: {
   title: string;
+  /** Shown before the title, e.g. a logo. */
+  leading?: ReactNode;
+  onLongPress?: () => void;
   /** Small pill after the title, e.g. "Trial" or "Plan". */
   badge?: { label: string; tone: 'trial' | 'neutral' };
   subtitle?: string;
@@ -40,6 +45,7 @@ export function Row({
   const p = usePalette();
   const content = (
     <View style={[styles.row, !last && { borderBottomColor: p.separator, borderBottomWidth: StyleSheet.hairlineWidth }]}>
+      {leading ? <View style={{ marginRight: 12 }}>{leading}</View> : null}
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           <Text style={[styles.rowTitle, { color: danger ? p.danger : p.text, flexShrink: 1 }]} numberOfLines={1}>
@@ -67,6 +73,7 @@ export function Row({
   return (
     <Pressable
       onPress={onPress}
+      onLongPress={onLongPress}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}

@@ -93,6 +93,8 @@ const draft = (over: Partial<ImportDraft> = {}): ImportDraft => ({
   startDate: null,
   trialEndDate: null,
   totalPayments: null,
+  variable: false,
+  actuals: [],
   ...over,
 });
 
@@ -237,7 +239,7 @@ describe('migration to v3 (trials and plans)', () => {
     const db = nodeDb();
     db.raw.exec(V2_SCHEMA);
     await migrate(db);
-    expect(userVersion(db)).toBe(3);
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
     expect(columns(db)).toEqual(expect.arrayContaining(['trial_end_date', 'total_payments']));
     const snap = await loadSnapshot(db);
     expect(snap.settings.homeCurrency).toBe('USD');
@@ -255,11 +257,11 @@ describe('migration to v3 (trials and plans)', () => {
     ]);
   });
 
-  it('upgrades a version 1 database straight to v3', async () => {
+  it('upgrades a version 1 database straight to the latest version', async () => {
     const db = nodeDb();
     db.raw.exec(V1_SCHEMA);
     await migrate(db);
-    expect(userVersion(db)).toBe(3);
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
     expect((await loadSnapshot(db)).subscriptions.map((x) => x.name)).toEqual(['Netflix']);
   });
 
@@ -293,7 +295,7 @@ describe('migration to v3 (trials and plans)', () => {
     expect(userVersion(db)).toBe(2);
     expect(columns(db)).not.toContain('trial_end_date');
     await migrate(db);
-    expect(userVersion(db)).toBe(3);
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
     expect(columns(db).filter((c) => c === 'trial_end_date')).toHaveLength(1);
     expect((await loadSnapshot(db)).subscriptions).toHaveLength(2);
   });
@@ -316,6 +318,100 @@ describe('migration to v3 (trials and plans)', () => {
     const t = snap.subscriptions.find((s) => s.name === 'Trial')!;
     await db.withExclusiveTransactionAsync((txn) => writeSub(txn, { ...t, trialEndDate: null }));
     expect((await loadSnapshot(db)).subscriptions.find((s) => s.name === 'Trial')!.trialEndDate).toBeNull();
+  });
+});
+
+const V3_SCHEMA = `${V2_SCHEMA.replace('PRAGMA user_version = 2;', '')}
+  ALTER TABLE subscriptions ADD COLUMN trial_end_date TEXT;
+  ALTER TABLE subscriptions ADD COLUMN total_payments INTEGER;
+  INSERT INTO subscriptions (id, name, amount, currency, cycle_unit, cycle_every, anchor_date, start_date, trial_end_date,
+    total_payments, notes, manage_url, reminders_enabled, cancelled, created_at, updated_at)
+    VALUES ('s3','Phone',50,'CAD','month',1,'2026-11-10','2026-06-10',NULL,12,'','',1,0,'t','t'),
+           ('s4','Trial',9,'CAD','month',1,'2026-11-20','2026-11-20','2026-11-20',NULL,'','',1,0,'t','t');
+  PRAGMA user_version = 3;
+`;
+
+describe('migration to v4 (weekday schedules and variable bills)', () => {
+  it('upgrades a version 3 database and keeps trials, plans, links and settings', async () => {
+    const db = nodeDb();
+    db.raw.exec(V3_SCHEMA);
+    await migrate(db);
+    expect(userVersion(db)).toBe(4);
+    expect(columns(db)).toEqual(expect.arrayContaining(['cycle_weekday_nth', 'cycle_weekday', 'variable', 'actuals']));
+    const snap = await loadSnapshot(db);
+    expect(snap.settings.homeCurrency).toBe('USD');
+    const byId = new Map(snap.subscriptions.map((x) => [x.id, x]));
+    expect(byId.get('s2')).toMatchObject({ categoryIds: ['c1'], cancelled: true, variable: false, actuals: [] });
+    expect(byId.get('s3')).toMatchObject({ totalPayments: 12, startDate: '2026-06-10', cycle: { unit: 'month', every: 1, weekday: null } });
+    expect(byId.get('s4')).toMatchObject({ trialEndDate: '2026-11-20', variable: false });
+  });
+
+  it('upgrades a version 1 database all the way', async () => {
+    const db = nodeDb();
+    db.raw.exec(V1_SCHEMA);
+    await migrate(db);
+    expect(userVersion(db)).toBe(4);
+    expect((await loadSnapshot(db)).subscriptions[0]).toMatchObject({ name: 'Netflix', variable: false, actuals: [] });
+  });
+
+  it.each([/cycle_weekday_nth/, /ADD COLUMN cycle_weekday INTEGER/, /ADD COLUMN variable/, /ADD COLUMN actuals/, /user_version = 4/])(
+    'rolls back a crash at %s to v3, then retries cleanly',
+    async (at) => {
+      const db = nodeDb();
+      db.raw.exec(V3_SCHEMA);
+      const first: SqlDb = {
+        ...db,
+        async withExclusiveTransactionAsync(task) {
+          return db.withExclusiveTransactionAsync(async (txn) => {
+            await task({
+              ...txn,
+              async execAsync(source: string) {
+                if (at.test(source)) throw new Error('app killed (simulated)');
+                await txn.execAsync(source);
+              },
+            });
+          });
+        },
+      };
+      await expect(migrate(first)).rejects.toThrow('app killed (simulated)');
+      expect(userVersion(db)).toBe(3);
+      for (const c of ['cycle_weekday_nth', 'cycle_weekday', 'variable', 'actuals']) expect(columns(db)).not.toContain(c);
+      await migrate(db);
+      expect(userVersion(db)).toBe(4);
+      expect(columns(db).filter((c) => c === 'variable')).toHaveLength(1);
+      expect((await loadSnapshot(db)).subscriptions).toHaveLength(4);
+    },
+  );
+
+  it('saves and loads a weekday schedule, a variable bill and its actuals', async () => {
+    const db = nodeDb();
+    await migrate(db);
+    await importDraftsInto(
+      db,
+      [
+        draft({ name: 'Club', cycle: { unit: 'month', every: 1, weekday: { nth: 2, day: 2 } }, anchorDate: '2026-11-10' }),
+        draft({ name: 'Hydro', amount: 85, variable: true, actuals: [{ date: '2026-09-20', amount: 92.15 }] }),
+      ],
+      makeId,
+    );
+    let snap = await loadSnapshot(db);
+    expect(snap.subscriptions.find((x) => x.name === 'Club')!.cycle).toEqual({ unit: 'month', every: 1, weekday: { nth: 2, day: 2 } });
+    const hydro = snap.subscriptions.find((x) => x.name === 'Hydro')!;
+    expect(hydro).toMatchObject({ variable: true, actuals: [{ date: '2026-09-20', amount: 92.15 }] });
+    // Switching back to a day-of-month schedule and a fixed amount clears the columns.
+    await db.withExclusiveTransactionAsync((txn) => writeSub(txn, { ...hydro, variable: false, actuals: [] }));
+    snap = await loadSnapshot(db);
+    expect(snap.subscriptions.find((x) => x.name === 'Hydro')).toMatchObject({ variable: false, actuals: [] });
+  });
+
+  it('ignores an unreadable actuals value instead of failing to load', async () => {
+    const db = nodeDb();
+    await migrate(db);
+    await importDraftsInto(db, [draft({ name: 'Hydro', variable: true })], makeId);
+    db.raw.exec(`UPDATE subscriptions SET actuals = 'not json'`);
+    expect((await loadSnapshot(db)).subscriptions[0].actuals).toEqual([]);
+    db.raw.exec(`UPDATE subscriptions SET actuals = '[{"date":"2026-09-20","amount":"x"},{"date":"2026-10-20","amount":90}]'`);
+    expect((await loadSnapshot(db)).subscriptions[0].actuals).toEqual([{ date: '2026-10-20', amount: 90 }]);
   });
 });
 

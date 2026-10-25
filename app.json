@@ -31,7 +31,8 @@
         {
           "enableRemoteNotifications": false
         }
-      ]
+      ],
+      "expo-font"
     ],
     "owner": "arjunbatra",
     "extra": {

@@ -17,12 +17,26 @@ and [docs/decisions.md](docs/decisions.md) for the choices made.
 - **Free trials**: turn on **Free trial**, pick the day it ends and enter the price after the trial. The list shows
   a **Trial** badge, "Trial ends in N days" and "Free". It counts as $0 in your averages until the end date, then at
   the post-trial price; the first charge shows up in "this month" on that day. You get reminders 3 days and 1 day
-  before it ends (at your reminder time), so you can cancel in time. Cancelling the item removes its reminders.
+  before it ends (at your reminder time), so you can cancel in time. If you add a trial after both of those times have passed (but before
+  it ends), you get one catch-up reminder a minute after saving instead, and the edit screen tells you. Cancelling the item removes its reminders.
 - **Payment plans** (for example paying off a phone): choose **Payment plan**, enter the amount per payment, how
   often, the next payment date, how many you've already made, and either the total number of payments or the last
   payment date. The list shows a **Plan** badge, "N of M paid" and what's left, and the home card shows the total
   left on all plans. You get a reminder before each payment ("payment 6 of 12"). After the last payment it stops
   and moves to **Completed plans**. A payment due today counts as not paid yet.
+- **Bills that vary** (hydro, a phone bill with overage): turn on **Varies** and enter your best guess. The list and
+  totals then say "about CA$85". After a charge, log what you were actually charged: swipe right on the row (or
+  touch and hold, then **Log Amount**), or fill in **Actual amounts** on the edit screen. Once you've logged some,
+  future charges are estimated as the average of the last 3 (fewer if you've logged fewer). Paid-so-far uses the
+  logged amount where there is one and the estimate otherwise. Reminders fire as before and say "about" the
+  current estimate. Payment plans can't vary.
+- **"The 2nd Tuesday" schedules**: for monthly and every-N-months items, set **Repeats on** to **Same weekday** and
+  pick the week (1st, 2nd, 3rd, 4th or last) and the day. Charges, reminders, totals and plan counts all follow it;
+  "last" handles 4- and 5-week months. If the date you picked isn't that weekday, saving moves it to the next one
+  (the screen tells you which).
+- **Category filter**: chips across the top of Home (All, then each category). Picking one shows only that
+  category's subscriptions, trials and plans, and the totals card shows that category's totals. The choice is kept
+  while the app is open and goes back to All the next time it starts.
 - **Categories**: each subscription can have none, one or several. "Uncategorized" is always listed, even at 0.
   Category totals count a multi-category subscription in full in each; the overall total counts it once, and the
   screen says so when the categories add up to more. A category with items that have no exchange rate names them.
@@ -42,7 +56,13 @@ and [docs/decisions.md](docs/decisions.md) for the choices made.
   reason and skipped), plus **CSV export** and a shareable template. Writing the ticked rows is all-or-nothing.
   Export includes whether each item is cancelled and whether its reminder is on, so a backup restores as it was.
 - A **Manage Subscription** link on each item that has a manage URL, plus a shortcut to Apple's subscriptions page.
-- Light and dark mode. Text colours meet WCAG AA (4.5:1), checked by a unit test.
+- **The look**: Home is a native iOS list (SwiftUI through `@expo/ui`): swipe left on a row to cancel or delete,
+  swipe right to log an amount, or touch and hold for a menu (Edit, Log Amount, Manage, Mark Cancelled, Delete).
+  Each row has the service's logo (about 30 common ones are bundled in the app, see below) or a coloured first
+  letter, the totals card has a donut of average monthly spend by category with a text legend, the progress bar
+  animates, and selecting or saving gives a light haptic tap. Categories and tabs use SF Symbols. The edit screen
+  uses native segmented and menu pickers. Other platforms get the plain React Native version of the same screens.
+- Light and dark mode. Text colours meet WCAG AA (4.5:1), chart and logo colours meet 3:1, checked by unit tests.
 
 ## Open it on your iPhone with Expo Go
 
@@ -104,7 +124,7 @@ About `--tunnel` in Expo CLI 58:
 npm ci
 npx expo lint          # lint
 npx tsc --noEmit       # typecheck
-npx jest               # unit tests for the pure logic in src/domain
+npx jest               # unit tests (domain logic, storage SQL, UI helpers, the Expo Go guard); runs in America/Toronto
 npm run check:no-network
 npm run check:expo-go   # keeps app.json loadable in Expo Go
 npx expo export --platform ios   # confirm it bundles
@@ -117,15 +137,21 @@ Layout:
 - `src/data/sql.ts`: storage SQL (migrations, import transaction), tested against Node's built-in SQLite.
 - `src/data/db.ts`: wires it to on-device SQLite (`expo-sqlite`).
 - `src/services/notifications.ts`: local notifications (`expo-notifications`). It never requests a push token.
-- `src/ui/`: screens and components.
+- `src/ui/`: screens and components. Pure helpers next to them (`look.ts` for logos, symbols and the donut,
+  `rows.ts` for what a row says) are unit-tested; the SwiftUI views themselves are only checked on a device.
+- `src/ui/brands/`: bundled logo paths, see "Logos" below.
+- `npm run check:expo-go` also fails on `expo-dev-client`, any `app.config.*` file, and any dependency that isn't a
+  module Expo Go ships at the version `npx expo install` picks (a short list of pure-JavaScript packages is allowed).
 
 ## CSV format
 
 Header row, any column order, case-insensitive, extra columns are ignored:
 
-`name, amount, currency, cycle, next charge date, categories, notes, manage url, status, reminders, first charge date, trial end date, total payments`
+`name, amount, currency, cycle, next charge date, categories, notes, manage url, status, reminders, first charge date, trial end date, total payments, varies, actuals`
 
-- `cycle`: `weekly`, `monthly`, `quarterly`, `yearly`, or `every N days|weeks|months|years`
+- `cycle`: `weekly`, `monthly`, `quarterly`, `yearly`, or `every N days|weeks|months|years`. A monthly or
+  every-N-months cycle can add a weekday rule: `monthly on the 2nd tue`, `every 2 months on the last friday`
+  (`1st`–`4th` or `last`, and a day name of at least 3 letters). `next charge date` must then be that weekday
 - `next charge date`: `YYYY-MM-DD`
 - `categories`: separated by `;`
 - `status`: `active` (default) or `cancelled`; `reminders`: `on` (default) or `off`
@@ -133,11 +159,25 @@ Header row, any column order, case-insensitive, extra columns are ignored:
   plan it's the date of payment 1 (blank means the next charge date is payment 1)
 - `trial end date`: optional `YYYY-MM-DD`, the day a free trial ends and the first charge happens. `amount` is the
   price after the trial, and `next charge date` can't be before the trial end
+- `trial end date`: when set, `next charge date` must be the same day (the first charge is when the trial ends)
 - `total payments`: optional whole number from 1 to 1000. Makes the row a payment plan of that many payments of
-  `amount`. A row can't have both a trial and total payments
-- Files without the last two columns (older exports) still import as ordinary subscriptions
+  `amount`. A row can't have both a trial and total payments. A plan's `first charge date` must fall on its
+  schedule (a charge date counted back from `next charge date`)
+- `varies`: `yes` for a bill whose amount changes; `amount` is then the estimate. Blank or `no` means fixed.
+  Payment plans can't vary
+- `actuals`: amounts logged for past charges of a `varies` row, as `date=amount` pairs separated by `;`, for
+  example `2026-07-20=81.4; 2026-09-20=92.15`. Amounts are in the row's currency, with a `.` for decimals and no
+  currency sign. Each date must be one of the row's charge dates and appear once. Export writes them oldest first
+- Files without the newer columns (older exports) still import: no trial, no plan, a fixed amount
 - Export puts `'` in front of any cell starting with `=`, `+`, `-` or `@` so spreadsheets don't run it as a
   formula. Import removes it again.
 
 A missing required column (name, amount, currency, cycle, next charge date) rejects the file and nothing is written.
 Use a CSV saved from Numbers, Excel or Google Sheets; `.xlsx` and `.numbers` files aren't supported.
+
+## Logos
+
+The brand marks in `src/ui/brands/data.ts` are SVG paths and colours copied from
+[Simple Icons](https://simpleicons.org) 16.36.0, released under CC0 1.0. They're bundled in the app and drawn with
+`react-native-svg`; nothing is downloaded. The names and logos are trademarks of their owners and are shown only to
+identify the service you typed. See [src/ui/brands/NOTICE.md](src/ui/brands/NOTICE.md).

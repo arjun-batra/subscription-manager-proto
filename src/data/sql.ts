@@ -4,7 +4,14 @@
  * Nothing here talks to a network.
  */
 import type { ImportDraft } from '../domain/csv';
-import { DEFAULT_SETTINGS, type Category, type Settings, type Subscription } from '../domain/types';
+import {
+  DEFAULT_SETTINGS,
+  type ActualCharge,
+  type Category,
+  type Settings,
+  type Subscription,
+  type WeekdayRule,
+} from '../domain/types';
 
 export type SqlParam = string | number | null;
 
@@ -20,7 +27,7 @@ export interface SqlDb extends SqlExec {
   withExclusiveTransactionAsync(task: (txn: SqlExec) => Promise<void>): Promise<void>;
 }
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * Brings the schema up to SCHEMA_VERSION. Each step runs in its own exclusive transaction
@@ -85,6 +92,37 @@ export async function migrate(db: SqlDb): Promise<void> {
       await txn.execAsync('PRAGMA user_version = 3');
     });
   }
+  if (version < 4) {
+    // Nth-weekday monthly schedules and variable bills. All nullable or defaulted, so existing
+    // rows keep their day-of-month schedule and fixed amount. Four ALTERs and the bump, one step.
+    await db.withExclusiveTransactionAsync(async (txn) => {
+      await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN cycle_weekday_nth INTEGER');
+      await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN cycle_weekday INTEGER');
+      await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN variable INTEGER NOT NULL DEFAULT 0');
+      await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN actuals TEXT');
+      await txn.execAsync('PRAGMA user_version = 4');
+    });
+  }
+}
+
+/** Logged actuals are stored as JSON [{date, amount}]; anything unreadable is dropped, never fatal. */
+export function parseActuals(raw: string | null | undefined): ActualCharge[] {
+  if (!raw) return [];
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v.filter(
+      (a): a is ActualCharge =>
+        !!a && typeof a.date === 'string' && typeof a.amount === 'number' && Number.isFinite(a.amount) && a.amount >= 0,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function weekdayFromRow(nth: number | null, day: number | null): WeekdayRule | null {
+  if (nth === null || nth === undefined || day === null || day === undefined) return null;
+  return { nth: nth as WeekdayRule['nth'], day: day as WeekdayRule['day'] };
 }
 
 interface SubRow {
@@ -98,6 +136,10 @@ interface SubRow {
   start_date: string | null;
   trial_end_date: string | null;
   total_payments: number | null;
+  cycle_weekday_nth: number | null;
+  cycle_weekday: number | null;
+  variable: number | null;
+  actuals: string | null;
   notes: string;
   manage_url: string;
   reminders_enabled: number;
@@ -135,11 +177,13 @@ export async function loadSnapshot(db: SqlExec): Promise<Snapshot> {
       name: r.name,
       amount: r.amount,
       currency: r.currency,
-      cycle: { unit: r.cycle_unit, every: r.cycle_every },
+      cycle: { unit: r.cycle_unit, every: r.cycle_every, weekday: weekdayFromRow(r.cycle_weekday_nth, r.cycle_weekday) },
       anchorDate: r.anchor_date,
       startDate: r.start_date ?? null,
       trialEndDate: r.trial_end_date ?? null,
       totalPayments: r.total_payments ?? null,
+      variable: !!r.variable,
+      actuals: parseActuals(r.actuals),
       categoryIds: byId.get(r.id) ?? [],
       notes: r.notes,
       manageUrl: r.manage_url,
@@ -156,12 +200,14 @@ export async function loadSnapshot(db: SqlExec): Promise<Snapshot> {
 export async function writeSub(db: SqlExec, s: Subscription): Promise<void> {
   await db.runAsync(
     `INSERT INTO subscriptions (id, name, amount, currency, cycle_unit, cycle_every, anchor_date, start_date,
-       trial_end_date, total_payments, notes, manage_url, reminders_enabled, cancelled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       trial_end_date, total_payments, cycle_weekday_nth, cycle_weekday, variable, actuals,
+       notes, manage_url, reminders_enabled, cancelled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET name = excluded.name, amount = excluded.amount, currency = excluded.currency,
        cycle_unit = excluded.cycle_unit, cycle_every = excluded.cycle_every, anchor_date = excluded.anchor_date,
        start_date = excluded.start_date, trial_end_date = excluded.trial_end_date,
-       total_payments = excluded.total_payments, notes = excluded.notes, manage_url = excluded.manage_url,
+       total_payments = excluded.total_payments, cycle_weekday_nth = excluded.cycle_weekday_nth,
+       cycle_weekday = excluded.cycle_weekday, variable = excluded.variable, actuals = excluded.actuals, notes = excluded.notes, manage_url = excluded.manage_url,
        reminders_enabled = excluded.reminders_enabled, cancelled = excluded.cancelled, updated_at = excluded.updated_at`,
     s.id,
     s.name,
@@ -173,6 +219,10 @@ export async function writeSub(db: SqlExec, s: Subscription): Promise<void> {
     s.startDate ?? null,
     s.trialEndDate ?? null,
     s.totalPayments ?? null,
+    s.cycle.weekday ? s.cycle.weekday.nth : null,
+    s.cycle.weekday ? s.cycle.weekday.day : null,
+    s.variable ? 1 : 0,
+    s.actuals?.length ? JSON.stringify(s.actuals.map((a) => ({ date: a.date, amount: a.amount }))) : null,
     s.notes,
     s.manageUrl,
     s.remindersEnabled ? 1 : 0,
@@ -227,6 +277,8 @@ export async function importDraftsInto(
         startDate: d.startDate,
         trialEndDate: d.trialEndDate,
         totalPayments: d.totalPayments,
+        variable: d.variable,
+        actuals: d.actuals,
         categoryIds,
         notes: d.notes,
         manageUrl: d.manageUrl,

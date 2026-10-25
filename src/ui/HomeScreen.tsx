@@ -1,61 +1,111 @@
+import {
+  Button as UIButton,
+  ContextMenu,
+  HStack,
+  Host,
+  List,
+  RNHostView,
+  Section,
+  Spacer,
+  SwipeActions,
+  Text as UIText,
+  VStack,
+} from '@expo/ui/swift-ui';
+import {
+  accessibilityElement,
+  accessibilityLabel,
+  background,
+  contentShape,
+  font,
+  foregroundStyle,
+  lineLimit,
+  listStyle,
+  monospacedDigit,
+  onTapGesture,
+  padding,
+  shapes,
+  tint,
+} from '@expo/ui/swift-ui/modifiers';
+import * as Haptics from 'expo-haptics';
 import { useMemo } from 'react';
-import { Linking, Pressable, ScrollView, Text, View } from 'react-native';
+import { Alert, Linking, Platform, Pressable, ScrollView, Text, useColorScheme, View } from 'react-native';
 
 import { describeCycle, shortDate } from '../domain/dates';
-import { describeTrialLeft, isCompleted, isPlan, nextCharge, planStatus, trialDaysLeft } from '../domain/schedule';
 import { formatMoney } from '../domain/money';
-import { computeMonthTotals, computeTotals } from '../domain/totals';
-import type { Subscription } from '../domain/types';
+import { isCompleted, isPlan, isVariable, nextCharge, planStatus, withActual } from '../domain/schedule';
+import { categoryIdsOf, computeMonthTotals, computeTotals, filterByCategory } from '../domain/totals';
+import { UNCATEGORIZED_ID, type Subscription } from '../domain/types';
 import { requestPermission } from '../services/notifications';
+import { BrandLogo } from './BrandLogo';
+import { CategoryFilter } from './CategoryFilter';
 import { Button, Card, Row, SectionHeader } from './components';
+import { donutSlices, filterOptions } from './look';
+import { amountLabel, chargeToLog, parseAmount, upcomingRow, type RowModel } from './rows';
 import { useStore } from './store';
+import { TotalsCard } from './TotalsCard';
 import { usePalette } from './theme';
+
+/** SwiftUI list on iOS (swipe actions and context menus); the plain React Native list elsewhere. */
+const NATIVE_LIST = Platform.OS === 'ios';
+
+interface ListItem {
+  s: Subscription;
+  model: RowModel;
+}
 
 export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => void; onAdd: () => void }) {
   const p = usePalette();
-  const { subscriptions, categories, settings, today, health, refresh } = useStore();
+  const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
+  const store = useStore();
+  const { subscriptions, categories, settings, today, health, refresh, categoryFilter, setCategoryFilter } = store;
   const home = settings.homeCurrency;
-  const month = useMemo(() => computeMonthTotals(subscriptions, settings, today), [subscriptions, settings, today]);
-  const totals = useMemo(
-    () => computeTotals(subscriptions, categories, settings, today),
-    [subscriptions, categories, settings, today],
-  );
-  const missingRate = [...new Map([...totals.missingRate, ...month.missingRate].map((s) => [s.id, s])).values()];
 
-  const active = useMemo(
+  const options = useMemo(
+    () => filterOptions(categories, subscriptions.some((s) => categoryIdsOf(s, categories).includes(UNCATEGORIZED_ID))),
+    [categories, subscriptions],
+  );
+  // A remembered category that was deleted falls back to All.
+  const filter = options.some((o) => o.id === categoryFilter) ? categoryFilter : null;
+  const scopeName = filter === null ? null : (options.find((o) => o.id === filter)?.name ?? null);
+  const shown = useMemo(() => filterByCategory(subscriptions, categories, filter), [subscriptions, categories, filter]);
+
+  const month = useMemo(() => computeMonthTotals(shown, settings, today), [shown, settings, today]);
+  const totals = useMemo(() => computeTotals(shown, categories, settings, today), [shown, categories, settings, today]);
+  const slices = useMemo(() => (filter === null ? donutSlices(totals.categories, scheme) : []), [filter, totals, scheme]);
+  const estimated = shown.some((s) => !s.cancelled && isVariable(s));
+
+  const active: ListItem[] = useMemo(
     () =>
-      subscriptions
+      shown
         .filter((s) => !s.cancelled && !isCompleted(s, today))
         .map((s) => ({ s, next: nextCharge(s, today) }))
-        .sort((a, b) => (a.next < b.next ? -1 : a.next > b.next ? 1 : a.s.name.localeCompare(b.s.name))),
-    [subscriptions, today],
+        .sort((a, b) => (a.next < b.next ? -1 : a.next > b.next ? 1 : a.s.name.localeCompare(b.s.name)))
+        .map(({ s, next }) => ({ s, model: upcomingRow(s, next, today) })),
+    [shown, today],
   );
-  const cancelled = subscriptions.filter((s) => s.cancelled).sort((a, b) => a.name.localeCompare(b.name));
-  const completed = subscriptions
+  const completed: ListItem[] = shown
     .filter((s) => !s.cancelled && isCompleted(s, today))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  /** What a row says: trial countdown, "N of M paid", or the plain renewal line. */
-  function describe(s: Subscription, next: string): { subtitle: string; badge?: { label: string; tone: 'trial' | 'neutral' } } {
-    const when = next === today ? 'Today' : shortDate(next, today);
-    const off = s.remindersEnabled ? '' : ' · reminder off';
-    const trialLeft = trialDaysLeft(s, today);
-    if (trialLeft !== null) {
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((s) => {
+      const plan = planStatus(s, today)!;
       return {
-        subtitle: `Trial ${describeTrialLeft(trialLeft)} · then ${formatMoney(s.amount, s.currency)} ${describeCycle(s.cycle).toLowerCase()}${off}`,
-        badge: { label: 'Trial', tone: 'trial' },
+        s,
+        model: {
+          title: s.name,
+          subtitle: `All ${plan.total} paid · last payment ${shortDate(plan.lastPayment, today)}`,
+          badge: { label: 'Completed', tone: 'neutral' },
+          right: formatMoney(plan.total * s.amount, s.currency),
+          accessibilityLabel: `${s.name}, completed, all ${plan.total} paid`,
+        },
       };
-    }
-    const plan = planStatus(s, today);
-    if (plan) {
-      return {
-        subtitle: `${when} · ${plan.paid} of ${plan.total} paid · ${formatMoney(plan.remainingAmount, s.currency)} left${off}`,
-        badge: { label: 'Plan', tone: 'neutral' },
-      };
-    }
-    return { subtitle: `${when} · ${describeCycle(s.cycle)}${off}` };
-  }
-  const progress = month.thisMonth > 0 ? month.paidSoFar / month.thisMonth : 0;
+    });
+  const cancelled: ListItem[] = shown
+    .filter((s) => s.cancelled)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((s) => {
+      const subtitle = isPlan(s) ? `Payment plan · ${describeCycle(s.cycle)}` : describeCycle(s.cycle);
+      return { s, model: { title: s.name, subtitle, right: amountLabel(s), accessibilityLabel: `${s.name}, cancelled, ${subtitle}` } };
+    });
 
   async function fixReminders() {
     if (!health.ok && health.reason === 'permission' && health.permission === 'undetermined') {
@@ -68,15 +118,62 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
     }
   }
 
-  return (
-    <ScrollView style={{ backgroundColor: p.background }} contentContainerStyle={{ paddingBottom: 32 }}>
+  function logAmount(s: Subscription) {
+    const date = chargeToLog(s, today);
+    if (!date) {
+      Alert.alert('Nothing to log yet', `${s.name}’s first charge hasn’t happened.`);
+      return;
+    }
+    if (Platform.OS !== 'ios') {
+      onEdit(s); // Alert.prompt is iOS-only; the edit screen has the same field.
+      return;
+    }
+    const existing = s.actuals?.find((a) => a.date === date);
+    Alert.prompt(
+      `${s.name}: ${shortDate(date, today)}`,
+      `What was actually charged? Future charges are estimated from the last 3 you log. Now ${amountLabel(s)}.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Save',
+          onPress: async (text?: string) => {
+            const amount = parseAmount(text ?? '');
+            if (amount === null) {
+              Alert.alert('That isn’t an amount', 'Enter a number greater than 0, like 84.12.');
+              return;
+            }
+            await store.saveSubscription({ ...withActual(s, date, amount), updatedAt: new Date().toISOString() });
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          },
+        },
+      ],
+      'plain-text',
+      existing ? String(existing.amount) : '',
+      'decimal-pad',
+    );
+  }
+
+  async function setCancelled(s: Subscription, value: boolean) {
+    await store.saveSubscription({ ...s, cancelled: value, updatedAt: new Date().toISOString() });
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+  }
+
+  function confirmDelete(s: Subscription) {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+    Alert.alert(`Delete ${s.name}?`, 'This removes it and its reminders. This can’t be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => store.deleteSubscription(s.id) },
+    ]);
+  }
+
+  const header = (
+    <>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 8 }}>
         <Text accessibilityRole="header" style={{ color: p.text, fontSize: 34, fontWeight: '700' }}>
           Subscriptions
         </Text>
         <Button title="Add" kind="filled" onPress={onAdd} />
       </View>
-
       {!health.ok ? (
         <View
           accessibilityRole="alert"
@@ -95,110 +192,172 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
           </Pressable>
         </View>
       ) : null}
+      {options.length > 1 ? (
+        <View style={{ marginTop: 12 }}>
+          <CategoryFilter options={options} selected={filter} onSelect={setCategoryFilter} />
+        </View>
+      ) : null}
+    </>
+  );
 
-      <Card style={{ marginTop: 16, padding: 16 }}>
-        <Text style={{ color: p.secondaryText, fontSize: 15 }}>Still due this month</Text>
-        <Text style={{ color: p.text, fontSize: 34, fontWeight: '700', fontVariant: ['tabular-nums'] }}>
-          {formatMoney(month.stillDue, home)}
-        </Text>
-        <View
-          accessible
-          accessibilityRole="progressbar"
-          accessibilityLabel="Paid this month"
-          accessibilityValue={{ text: `Paid ${formatMoney(month.paidSoFar, home)} of ${formatMoney(month.thisMonth, home)}` }}
-          style={{ height: 8, borderRadius: 4, backgroundColor: p.chipBg, marginTop: 12, overflow: 'hidden' }}
-        >
-          <View style={{ width: `${Math.round(progress * 100)}%`, height: '100%', backgroundColor: p.accent }} />
-        </View>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
-          <Text style={{ color: p.secondaryText, fontSize: 15 }}>Paid {formatMoney(month.paidSoFar, home)}</Text>
-          <Text style={{ color: p.secondaryText, fontSize: 15 }}>This month {formatMoney(month.thisMonth, home)}</Text>
-        </View>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 }}>
-          <Text style={{ color: p.text, fontSize: 15 }}>Average {formatMoney(totals.overall.monthly, home)}/mo</Text>
-          <Text style={{ color: p.text, fontSize: 15 }}>{formatMoney(totals.overall.yearly, home)}/yr</Text>
-        </View>
-        {totals.planCount ? (
-          <Text style={{ color: p.secondaryText, fontSize: 15, marginTop: 8 }}>
-            Left on {totals.planCount} payment plan{totals.planCount === 1 ? '' : 's'}: {formatMoney(totals.plansRemaining, home)}
-          </Text>
-        ) : null}
-        {missingRate.length ? (
-          <Text style={{ color: p.danger, fontSize: 14, marginTop: 10 }}>
-            Not in totals: {missingRate.map((s) => `${s.name} (${s.currency})`).join(', ')}. Add a rate in Settings.
-          </Text>
-        ) : null}
-      </Card>
+  const totalsCard = (
+    <TotalsCard month={month} totals={totals} currency={home} slices={slices} estimated={estimated} scopeName={scopeName} />
+  );
 
+  const empty =
+    filter === null ? (
+      { title: 'No subscriptions yet', body: 'Add one, or import a CSV from Settings. Everything stays on this phone.' }
+    ) : (
+      { title: `Nothing in ${scopeName}`, body: 'Pick All to see everything, or add a category to a subscription when you edit it.' }
+    );
+
+  if (NATIVE_LIST) {
+    const row = ({ s, model }: ListItem) => (
+      <SwipeActions key={s.id}>
+        <ContextMenu>
+          <ContextMenu.Items>
+            <UIButton label="Edit" systemImage="pencil" onPress={() => onEdit(s)} />
+            {isVariable(s) && !s.cancelled ? (
+              <UIButton label="Log Amount" systemImage="square.and.pencil" onPress={() => logAmount(s)} />
+            ) : null}
+            {s.manageUrl ? <UIButton label="Manage" systemImage="safari" onPress={() => Linking.openURL(s.manageUrl)} /> : null}
+            <UIButton
+              label={s.cancelled ? 'Restore' : 'Mark Cancelled'}
+              systemImage={s.cancelled ? 'arrow.uturn.backward' : 'xmark.circle'}
+              onPress={() => setCancelled(s, !s.cancelled)}
+            />
+            <UIButton label="Delete" systemImage="trash" role="destructive" onPress={() => confirmDelete(s)} />
+          </ContextMenu.Items>
+          <ContextMenu.Trigger>
+            <HStack
+              spacing={12}
+              modifiers={[
+                contentShape(shapes.rectangle()),
+                onTapGesture(() => onEdit(s)),
+                accessibilityElement('combine'),
+                accessibilityLabel(model.accessibilityLabel),
+              ]}
+            >
+              <RNHostView matchContents>
+                <BrandLogo name={s.name} size={36} />
+              </RNHostView>
+              <VStack alignment="leading" spacing={2}>
+                <HStack spacing={6}>
+                  <UIText modifiers={[font({ textStyle: 'body' }), foregroundStyle(p.text), lineLimit(1)]}>{model.title}</UIText>
+                  {model.badge ? (
+                    <UIText
+                      modifiers={[
+                        font({ textStyle: 'caption', weight: 'semibold' }),
+                        foregroundStyle(model.badge.tone === 'trial' ? p.warningText : p.chipText),
+                        padding({ leading: 6, trailing: 6, top: 2, bottom: 2 }),
+                        background(model.badge.tone === 'trial' ? p.warningBg : p.chipBg, shapes.roundedRectangle({ cornerRadius: 6 })),
+                      ]}
+                    >
+                      {model.badge.label}
+                    </UIText>
+                  ) : null}
+                </HStack>
+                <UIText modifiers={[font({ textStyle: 'subheadline' }), foregroundStyle(p.secondaryText), lineLimit(2)]}>
+                  {model.subtitle}
+                </UIText>
+              </VStack>
+              <Spacer />
+              <UIText modifiers={[font({ textStyle: 'body' }), foregroundStyle(p.text), monospacedDigit()]}>{model.right}</UIText>
+            </HStack>
+          </ContextMenu.Trigger>
+        </ContextMenu>
+        <SwipeActions.Actions edge="trailing" allowsFullSwipe={false}>
+          <UIButton label="Delete" systemImage="trash" role="destructive" onPress={() => confirmDelete(s)} />
+          <UIButton
+            label={s.cancelled ? 'Restore' : 'Cancel'}
+            systemImage={s.cancelled ? 'arrow.uturn.backward' : 'xmark.circle'}
+            onPress={() => setCancelled(s, !s.cancelled)}
+            modifiers={[tint('orange')]}
+          />
+        </SwipeActions.Actions>
+        {isVariable(s) && !s.cancelled ? (
+          <SwipeActions.Actions edge="leading">
+            <UIButton label="Log" systemImage="square.and.pencil" onPress={() => logAmount(s)} modifiers={[tint(p.accent)]} />
+          </SwipeActions.Actions>
+        ) : null}
+      </SwipeActions>
+    );
+
+    return (
+      <View style={{ flex: 1, backgroundColor: p.background }}>
+        {header}
+        <Host style={{ flex: 1 }} colorScheme={scheme} seedColor={p.accent}>
+          <List modifiers={[listStyle('insetGrouped')]}>
+            <Section>
+              <RNHostView matchContents={{ vertical: true }}>
+                <View style={{ paddingVertical: 8 }}>{totalsCard}</View>
+              </RNHostView>
+            </Section>
+            <Section title="Upcoming">
+              {active.length === 0 ? (
+                <VStack alignment="leading" spacing={4}>
+                  <UIText modifiers={[font({ textStyle: 'headline' }), foregroundStyle(p.text)]}>{empty.title}</UIText>
+                  <UIText modifiers={[font({ textStyle: 'subheadline' }), foregroundStyle(p.secondaryText)]}>{empty.body}</UIText>
+                </VStack>
+              ) : (
+                active.map(row)
+              )}
+            </Section>
+            {completed.length ? <Section title="Completed plans">{completed.map(row)}</Section> : null}
+            {cancelled.length ? <Section title="Cancelled">{cancelled.map(row)}</Section> : null}
+          </List>
+        </Host>
+      </View>
+    );
+  }
+
+  const rnRows = (items: ListItem[]) => (
+    <Card>
+      {items.map(({ s, model }, i) => (
+        <Row
+          key={s.id}
+          leading={<BrandLogo name={s.name} size={32} />}
+          title={model.title}
+          badge={model.badge}
+          subtitle={model.subtitle}
+          right={model.right}
+          onPress={() => onEdit(s)}
+          onLongPress={isVariable(s) && !s.cancelled ? () => logAmount(s) : undefined}
+          accessibilityLabel={model.accessibilityLabel}
+          last={i === items.length - 1}
+        />
+      ))}
+    </Card>
+  );
+
+  return (
+    <ScrollView style={{ backgroundColor: p.background }} contentContainerStyle={{ paddingBottom: 32 }}>
+      {header}
+      <Card style={{ marginTop: 16, padding: 16 }}>{totalsCard}</Card>
       <SectionHeader>Upcoming</SectionHeader>
       {active.length === 0 ? (
         <Card style={{ padding: 20, alignItems: 'center' }}>
-          <Text style={{ color: p.text, fontSize: 17, fontWeight: '600' }}>No subscriptions yet</Text>
-          <Text style={{ color: p.secondaryText, fontSize: 15, marginTop: 4, textAlign: 'center' }}>
-            Add one, or import a CSV from Settings. Everything stays on this phone.
-          </Text>
-          <View style={{ marginTop: 12 }}>
-            <Button title="Add Subscription" kind="filled" onPress={onAdd} />
-          </View>
+          <Text style={{ color: p.text, fontSize: 17, fontWeight: '600' }}>{empty.title}</Text>
+          <Text style={{ color: p.secondaryText, fontSize: 15, marginTop: 4, textAlign: 'center' }}>{empty.body}</Text>
+          {filter === null ? (
+            <View style={{ marginTop: 12 }}>
+              <Button title="Add Subscription" kind="filled" onPress={onAdd} />
+            </View>
+          ) : null}
         </Card>
       ) : (
-        <Card>
-          {active.map(({ s, next }, i) => {
-            const d = describe(s, next);
-            const trialLeft = trialDaysLeft(s, today);
-            return (
-              <Row
-                key={s.id}
-                title={s.name}
-                badge={d.badge}
-                subtitle={d.subtitle}
-                right={trialLeft !== null && trialLeft > 0 ? 'Free' : formatMoney(s.amount, s.currency)}
-                onPress={() => onEdit(s)}
-                accessibilityLabel={`${s.name}${d.badge ? `, ${d.badge.label}` : ''}, ${d.subtitle}`}
-                last={i === active.length - 1}
-              />
-            );
-          })}
-        </Card>
+        rnRows(active)
       )}
-
       {completed.length ? (
         <>
           <SectionHeader>Completed plans</SectionHeader>
-          <Card>
-            {completed.map((s, i) => {
-              const plan = planStatus(s, today)!;
-              return (
-                <Row
-                  key={s.id}
-                  title={s.name}
-                  badge={{ label: 'Completed', tone: 'neutral' }}
-                  subtitle={`All ${plan.total} paid · last payment ${shortDate(plan.lastPayment, today)}`}
-                  right={formatMoney(plan.total * s.amount, s.currency)}
-                  onPress={() => onEdit(s)}
-                  last={i === completed.length - 1}
-                />
-              );
-            })}
-          </Card>
+          {rnRows(completed)}
         </>
       ) : null}
-
       {cancelled.length ? (
         <>
           <SectionHeader>Cancelled</SectionHeader>
-          <Card>
-            {cancelled.map((s, i) => (
-              <Row
-                key={s.id}
-                title={s.name}
-                subtitle={isPlan(s) ? `Payment plan · ${describeCycle(s.cycle)}` : describeCycle(s.cycle)}
-                right={formatMoney(s.amount, s.currency)}
-                onPress={() => onEdit(s)}
-                last={i === cancelled.length - 1}
-              />
-            ))}
-          </Card>
+          {rnRows(cancelled)}
         </>
       ) : null}
     </ScrollView>

@@ -18,6 +18,10 @@ local renewal reminders within the 64-pending limit plus the home warning (FR-00
 with hand-entered rates (FR-008), free trials with a countdown and reminders 3 days and 1 day before they end
 (FR-004, FR-010; added 2026-10-25 by Arjun), and instalment plans such as paying off a phone: N of M paid, what's
 left, a reminder before each payment, and stopping after the last one (new, added 2026-10-25 by Arjun).
+Batch 2 (added 2026-10-25 by Arjun): a category filter on Home (session only), variable bills ("Varies": an
+estimate, logged actuals, future charges at the average of the last 3), monthly schedules on the nth weekday
+("2nd Tuesday", "last Friday"), and a native iOS look (SwiftUI list with swipe actions and context menus through
+`@expo/ui`, SF Symbols, about 30 bundled brand logos, a spend-by-category donut, light haptics and animation).
 Stretch (done): CSV import with checkbox preview (FR-013 spreadsheet import, FR-020 preview rules), CSV export
 (FR-012, CSV only), and the Manage Subscription row (FR-014, FR-024).
 Out: the install-expiry warning (FR-022, not needed with Expo Go), presets (FR-002, FR-021), adjustable trial
@@ -31,7 +35,12 @@ statement import (FR-015), mark as paid (FR-016), widget (FR-017), JSON export a
   2. **Insight:** it shows him something he didn't know, like a forgotten charge or a higher total than he thought.
   3. **Reminder:** a reminder fires on time and says something he'd act on. Test it with one due tomorrow.
   4. **Trust:** he'd keep it on his phone and rely on it to warn him before the next charge.
-- **Kill** if most of the four checks fail, or he says he'd rather use a spreadsheet.
+- **Each check is pass or fail**, as Arjun judges it at the end of the week. Then:
+  - **Kill** if 3 or 4 of the checks fail, or he says he'd rather use a spreadsheet.
+  - **Park and iterate** if exactly 2 fail: write down what failed, and decide with Arjun whether a second week on
+    those two is worth it.
+  - **Continue** if 0 or 1 fail.
+  The park rules below apply whatever the count.
 - **Park** if reminders don't fire reliably in Expo Go on his iPhone and fixing that would need the $99/year Apple
   Developer Program. That's a money decision for Arjun.
 - **Park** if Expo Go drops SDK 58 support before the week ends and upgrading takes more than a day.

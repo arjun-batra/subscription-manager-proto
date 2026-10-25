@@ -13,13 +13,15 @@ export function sub(partial: Partial<Subscription> & { cycle?: Cycle } = {}): Su
     startDate: partial.startDate ?? null,
     trialEndDate: partial.trialEndDate ?? null,
     totalPayments: partial.totalPayments ?? null,
+    variable: partial.variable ?? false,
+    actuals: partial.actuals ?? [],
     categoryIds: partial.categoryIds ?? [],
     notes: partial.notes ?? '',
     manageUrl: partial.manageUrl ?? '',
     remindersEnabled: partial.remindersEnabled ?? true,
     cancelled: partial.cancelled ?? false,
-    createdAt: '2026-10-25T00:00:00.000Z',
-    updatedAt: '2026-10-25T00:00:00.000Z',
+    createdAt: partial.createdAt ?? '2026-10-25T00:00:00.000Z',
+    updatedAt: partial.updatedAt ?? '2026-10-25T00:00:00.000Z',
   };
 }
 

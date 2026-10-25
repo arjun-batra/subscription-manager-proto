@@ -1,7 +1,7 @@
-import { describeCycle, isValidCycle, isValidLocalDate } from './dates';
+import { describeCycle, describeWeekdayRule, isValidCycle, isValidLocalDate, nextOnOrAfter, parseWeekdayRule } from './dates';
 import { isValidCurrency } from './money';
 import { MAX_PLAN_PAYMENTS } from './schedule';
-import type { Category, Cycle, LocalDate, Subscription } from './types';
+import type { ActualCharge, Category, Cycle, LocalDate, Subscription } from './types';
 
 /** RFC 4180-style parser: quoted fields, "" escapes, CRLF/LF, optional BOM. */
 export function parseCsv(text: string): string[][] {
@@ -55,6 +55,8 @@ const HEADER_ALIASES: Record<string, string[]> = {
   start: ['first charge date', 'start date', 'first charge', 'first payment date'],
   trial: ['trial end date', 'trial end', 'trial ends'],
   payments: ['total payments', 'number of payments', 'payments'],
+  varies: ['varies', 'variable'],
+  actuals: ['actuals', 'actual amounts'],
 };
 const REQUIRED = ['name', 'amount', 'currency', 'cycle', 'next'] as const;
 const LABEL: Record<string, string> = {
@@ -79,6 +81,8 @@ export const CSV_COLUMNS = [
   'first charge date',
   'trial end date',
   'total payments',
+  'varies',
+  'actuals',
 ];
 
 const FORMULA_START = /^[=+\-@\t\r]/;
@@ -96,9 +100,19 @@ function unguard(v: string): string {
   return v.startsWith("'") && needsGuard(v.slice(1)) ? v.slice(1) : v;
 }
 
-/** "monthly", "every 2 weeks", "quarterly", "every 10 days", ... */
+/**
+ * "monthly", "every 2 weeks", "quarterly", "every 10 days", ... Monthly cycles can add a weekday
+ * rule: "monthly on the 2nd tuesday", "every 2 months on the last fri".
+ */
 export function parseCycle(raw: string): Cycle | null {
   const s = raw.trim().toLowerCase().replace(/\s+/g, ' ');
+  const on = /^(.+?) on the (.+)$/.exec(s);
+  if (on) {
+    const base = parseCycle(on[1]);
+    const weekday = parseWeekdayRule(on[2]);
+    if (!base || !weekday || base.unit !== 'month') return null;
+    return { ...base, weekday };
+  }
   const simple: Record<string, Cycle> = {
     daily: { unit: 'day', every: 1 },
     weekly: { unit: 'week', every: 1 },
@@ -135,6 +149,30 @@ export interface ImportDraft {
   trialEndDate: LocalDate | null;
   /** Instalment plan: number of payments, the first on startDate (or the next charge date). */
   totalPayments: number | null;
+  /** Variable bill: `amount` is the estimate. */
+  variable: boolean;
+  /** Logged actual amounts for past charges. */
+  actuals: ActualCharge[];
+}
+
+/** Compact actuals cell: "2026-09-01=84.12; 2026-10-01=91.3" (date=amount pairs, ; separated). */
+export function formatActuals(actuals: ActualCharge[] | undefined): string {
+  return [...(actuals ?? [])]
+    .sort((a, b) => (a.date < b.date ? -1 : 1))
+    .map((a) => `${a.date}=${a.amount}`)
+    .join('; ');
+}
+
+/** Parses the actuals cell, or returns an error message. */
+export function parseActualsCell(raw: string): { actuals: ActualCharge[] } | { error: string } {
+  const out: ActualCharge[] = [];
+  for (const part of raw.split(';').map((p) => p.trim()).filter(Boolean)) {
+    const m = /^(\d{4}-\d{2}-\d{2})\s*=\s*(\d+(?:\.\d+)?)$/.exec(part);
+    if (!m || !isValidLocalDate(m[1])) return { error: `actuals must look like 2026-09-01=84.12; “${part}” doesn’t` };
+    if (out.some((a) => a.date === m[1])) return { error: `actuals list ${m[1]} twice` };
+    out.push({ date: m[1], amount: Number(m[2]) });
+  }
+  return { actuals: out };
 }
 
 export type RowStatus = 'valid' | 'duplicate' | 'invalid';
@@ -200,10 +238,15 @@ export function previewImport(text: string, existing: Subscription[]): ImportPre
     else if (startDate && isValidLocalDate(anchorDate) && startDate > anchorDate) {
       problems.push("first charge date can't be after the next charge date");
     }
+    const onSchedule = (d: string) => !!cycle && isValidLocalDate(anchorDate) && nextOnOrAfter(anchorDate, cycle, d) === d;
+    if (cycle?.weekday && isValidLocalDate(anchorDate) && !onSchedule(anchorDate)) {
+      problems.push(`next charge date isn't the ${describeWeekdayRule(cycle.weekday)} of its month`);
+    }
     const trialEnd = get(r, 'trial');
     if (trialEnd && !isValidLocalDate(trialEnd)) problems.push('trial end date must be YYYY-MM-DD');
-    else if (trialEnd && isValidLocalDate(anchorDate) && anchorDate < trialEnd) {
-      problems.push("next charge date can't be before the trial end date");
+    else if (trialEnd && isValidLocalDate(anchorDate) && anchorDate !== trialEnd) {
+      // T2: the first charge happens the day the trial ends, so the two dates are the same day.
+      problems.push('next charge date must be the trial end date (the first charge is when the trial ends)');
     }
     const paymentsRaw = get(r, 'payments');
     const totalPayments = paymentsRaw ? Number(paymentsRaw) : null;
@@ -211,6 +254,25 @@ export function previewImport(text: string, existing: Subscription[]): ImportPre
       problems.push(`total payments must be a whole number from 1 to ${MAX_PLAN_PAYMENTS}`);
     }
     if (trialEnd && paymentsRaw) problems.push("a payment plan can't have a free trial");
+    // T3: a plan's first payment has to be one of its payment dates, or "N of M paid" is off.
+    if (paymentsRaw && startDate && isValidLocalDate(startDate) && !onSchedule(startDate)) {
+      problems.push(`first payment date ${startDate} isn't on the ${cycle ? describeCycle(cycle).toLowerCase() : ''} schedule of the next charge date`);
+    }
+    const variesRaw = get(r, 'varies').toLowerCase();
+    if (!['', 'yes', 'no', 'true', 'false', 'on', 'off', 'variable', 'fixed'].includes(variesRaw)) {
+      problems.push('varies must be yes or no');
+    }
+    const variable = ['yes', 'true', 'on', 'variable'].includes(variesRaw);
+    if (variable && paymentsRaw) problems.push("a payment plan's payments can't vary");
+    const actualsCell = parseActualsCell(get(r, 'actuals'));
+    let actuals: ActualCharge[] = [];
+    if ('error' in actualsCell) problems.push(actualsCell.error);
+    else {
+      actuals = actualsCell.actuals;
+      if (actuals.length && !variable) problems.push('actuals need varies set to yes');
+      const off = actuals.find((a) => cycle && isValidLocalDate(anchorDate) && !onSchedule(a.date));
+      if (off) problems.push(`actual for ${off.date} isn't a charge date`);
+    }
     if (problems.length || !cycle) {
       return { line, status: 'invalid', reason: problems.join('; '), checked: false };
     }
@@ -231,6 +293,8 @@ export function previewImport(text: string, existing: Subscription[]): ImportPre
       startDate: startDate || null,
       trialEndDate: trialEnd || null,
       totalPayments,
+      variable,
+      actuals,
     };
     const key = duplicateKey(name, amount, cycle);
     if (seen.has(key)) {
@@ -252,8 +316,8 @@ export function importSelectedRows(rows: PreviewRow[]): PreviewRow[] {
 }
 
 function cycleToCsv(c: Cycle): string {
-  if (c.every === 1) return describeCycle(c).toLowerCase();
-  return `every ${c.every} ${c.unit}s`;
+  const base = c.every === 1 ? describeCycle({ unit: c.unit, every: 1 }).toLowerCase() : `every ${c.every} ${c.unit}s`;
+  return c.unit === 'month' && c.weekday ? `${base} on the ${describeWeekdayRule(c.weekday, true).toLowerCase()}` : base;
 }
 
 /**
@@ -285,6 +349,8 @@ export function toCsv(subs: Subscription[], categories: Category[]): string {
         s.startDate ?? '',
         s.trialEndDate ?? '',
         s.totalPayments ? String(s.totalPayments) : '',
+        s.variable ? 'yes' : '',
+        s.variable ? formatActuals(s.actuals) : '',
       ]
         .map(esc)
         .join(','),
@@ -295,6 +361,8 @@ export function toCsv(subs: Subscription[], categories: Category[]): string {
 
 export const CSV_TEMPLATE =
   CSV_COLUMNS.join(',') +
-  '\r\nNetflix,16.49,CAD,monthly,2026-11-05,Streaming,Family plan,https://www.netflix.com/account,active,on,,,\r\n' +
-  'Phone,45,CAD,monthly,2026-11-10,Phone,Paying off the phone,,active,on,2026-03-10,,24\r\n' +
-  'Trial app,9.99,CAD,monthly,2026-12-01,,Free trial,,active,on,,2026-12-01,\r\n';
+  '\r\nNetflix,16.49,CAD,monthly,2026-11-05,Streaming,Family plan,https://www.netflix.com/account,active,on,,,,,\r\n' +
+  'Phone,45,CAD,monthly,2026-11-10,Phone,Paying off the phone,,active,on,2026-03-10,,24,,\r\n' +
+  'Trial app,9.99,CAD,monthly,2026-12-01,,Free trial,,active,on,,2026-12-01,,,\r\n' +
+  'Hydro,85,CAD,every 2 months,2026-11-20,Utilities,Estimate,,active,on,,,,yes,2026-07-20=81.4; 2026-09-20=92.15\r\n' +
+  'Book club,12,CAD,monthly on the 2nd tue,2026-11-10,,2nd Tuesday,,active,on,,,,,\r\n';
