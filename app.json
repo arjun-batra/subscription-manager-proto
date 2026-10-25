@@ -1,13 +1,14 @@
 {
   "expo": {
-    "name": "subscription-manager-proto",
+    "name": "Subscriptions",
     "slug": "subscription-manager-proto",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.arjunbatra.subscriptionmanagerproto"
     },
     "android": {
       "adaptiveIcon": {
@@ -20,6 +21,23 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-sqlite",
+      "expo-sharing",
+      "@react-native-community/datetimepicker",
+      [
+        "expo-notifications",
+        {
+          "enableRemoteNotifications": false
+        }
+      ]
+    ],
+    "owner": "arjunbatra",
+    "extra": {
+      "eas": {
+        "projectId": "397c0dd9-be0b-4d81-8d6a-4d94ce66c6be"
+      }
     }
   }
 }
