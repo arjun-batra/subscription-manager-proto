@@ -14,6 +14,15 @@ and [docs/decisions.md](docs/decisions.md) for the choices made.
 - **Existing or new?** By default the app assumes a subscription was already running, so if its next charge is
   next month, this month's charge counts as paid. For a brand-new subscription, turn on **This is the first
   charge** so nothing before that date counts.
+- **Free trials**: turn on **Free trial**, pick the day it ends and enter the price after the trial. The list shows
+  a **Trial** badge, "Trial ends in N days" and "Free". It counts as $0 in your averages until the end date, then at
+  the post-trial price; the first charge shows up in "this month" on that day. You get reminders 3 days and 1 day
+  before it ends (at your reminder time), so you can cancel in time. Cancelling the item removes its reminders.
+- **Payment plans** (for example paying off a phone): choose **Payment plan**, enter the amount per payment, how
+  often, the next payment date, how many you've already made, and either the total number of payments or the last
+  payment date. The list shows a **Plan** badge, "N of M paid" and what's left, and the home card shows the total
+  left on all plans. You get a reminder before each payment ("payment 6 of 12"). After the last payment it stops
+  and moves to **Completed plans**. A payment due today counts as not paid yet.
 - **Categories**: each subscription can have none, one or several. "Uncategorized" is always listed, even at 0.
   Category totals count a multi-category subscription in full in each; the overall total counts it once, and the
   screen says so when the categories add up to more. A category with items that have no exchange rate names them.
@@ -21,9 +30,9 @@ and [docs/decisions.md](docs/decisions.md) for the choices made.
   month's total, and the normalized monthly and yearly average. Exchange rates are typed in by you. Items with no
   rate yet are left out of totals and named on the home screen and on their categories. Rates are relative to the
   home currency, so changing the home currency clears them and the app tells you which ones to re-enter.
-- **Renewal reminders**: local notifications, by default 2 days before at 9:00 AM. Each subscription has its
-  **next** reminder pending, for up to 60 subscriptions (the soonest ones), which stays under iOS's
-  64-notification limit. Later reminders, and those for subscriptions beyond the first 60, are scheduled when you
+- **Renewal reminders**: local notifications, by default 2 days before at 9:00 AM. Each subscription or plan has its
+  **next** reminder pending (a trial has its two trial reminders instead), and the soonest 60 reminders across all
+  of them are kept, which stays under iOS's 64-notification limit. Later reminders, and those for subscriptions beyond the first 60, are scheduled when you
   next open the app, so open it at least once between charges. Editing an item or changing **Remind me** or
   **At** replaces its pending reminder straight away. A home-screen banner appears whenever reminders can't fire
   (permission off, or a reminder that should be pending isn't). If an item renews more often than the lead time
@@ -84,7 +93,10 @@ About `--tunnel` in Expo CLI 58:
 
 - When the app first asks, allow notifications so reminders can fire.
 - Your data is saved in Expo Go's storage on the phone. It survives closing and reopening the app, but deleting Expo Go deletes it. Use **Settings → Export CSV** for a backup.
-- Expo Go collects its own usage and crash data. This app's code doesn't add any.
+- Expo Go is a third-party app with its own data collection. Apple's App Store privacy label for Expo Go lists
+  tracking, and data linked to you, used for third-party advertising (see the listing linked above). That's Expo
+  Go's own data. This app's code adds no analytics or network calls, and your subscriptions stay in the app's
+  storage on the phone.
 
 ## Develop
 
@@ -111,13 +123,19 @@ Layout:
 
 Header row, any column order, case-insensitive, extra columns are ignored:
 
-`name, amount, currency, cycle, next charge date, categories, notes, manage url, status, reminders, first charge date`
+`name, amount, currency, cycle, next charge date, categories, notes, manage url, status, reminders, first charge date, trial end date, total payments`
 
 - `cycle`: `weekly`, `monthly`, `quarterly`, `yearly`, or `every N days|weeks|months|years`
 - `next charge date`: `YYYY-MM-DD`
 - `categories`: separated by `;`
 - `status`: `active` (default) or `cancelled`; `reminders`: `on` (default) or `off`
-- `first charge date`: optional `YYYY-MM-DD`, for a new subscription with nothing paid before it
+- `first charge date`: optional `YYYY-MM-DD`, for a new subscription with nothing paid before it. For a payment
+  plan it's the date of payment 1 (blank means the next charge date is payment 1)
+- `trial end date`: optional `YYYY-MM-DD`, the day a free trial ends and the first charge happens. `amount` is the
+  price after the trial, and `next charge date` can't be before the trial end
+- `total payments`: optional whole number from 1 to 1000. Makes the row a payment plan of that many payments of
+  `amount`. A row can't have both a trial and total payments
+- Files without the last two columns (older exports) still import as ordinary subscriptions
 - Export puts `'` in front of any cell starting with `=`, `+`, `-` or `@` so spreadsheets don't run it as a
   formula. Import removes it again.
 

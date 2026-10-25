@@ -11,6 +11,8 @@ export function sub(partial: Partial<Subscription> & { cycle?: Cycle } = {}): Su
     cycle: partial.cycle ?? { unit: 'month', every: 1 },
     anchorDate: partial.anchorDate ?? '2026-11-05',
     startDate: partial.startDate ?? null,
+    trialEndDate: partial.trialEndDate ?? null,
+    totalPayments: partial.totalPayments ?? null,
     categoryIds: partial.categoryIds ?? [],
     notes: partial.notes ?? '',
     manageUrl: partial.manageUrl ?? '',

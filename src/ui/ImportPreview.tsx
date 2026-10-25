@@ -78,7 +78,11 @@ export function ImportPreview({ initial, onDone }: { initial: PreviewRow[]; onDo
                   {r.draft ? r.draft.name : `Line ${r.line}`}
                 </Text>
                 <Text style={{ color: r.status === 'valid' ? p.secondaryText : r.status === 'invalid' ? p.danger : p.warningText, fontSize: 14 }}>
-                  {r.draft ? `${formatMoney(r.draft.amount, r.draft.currency)} · ${describeCycle(r.draft.cycle)} · ${r.draft.anchorDate}` : ''}
+                  {r.draft
+                    ? `${formatMoney(r.draft.amount, r.draft.currency)} · ${describeCycle(r.draft.cycle)} · ${r.draft.anchorDate}${
+                        r.draft.trialEndDate ? ` · trial ends ${r.draft.trialEndDate}` : ''
+                      }${r.draft.totalPayments ? ` · plan of ${r.draft.totalPayments}` : ''}`
+                    : ''}
                   {r.status !== 'valid' ? `${r.draft ? ' · ' : ''}${r.status === 'duplicate' ? 'Possible duplicate' : `Line ${r.line}: ${r.reason}`}` : ''}
                 </Text>
               </View>

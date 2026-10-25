@@ -25,8 +25,11 @@ export function Row({
   last,
   accessibilityLabel,
   danger,
+  badge,
 }: {
   title: string;
+  /** Small pill after the title, e.g. "Trial" or "Plan". */
+  badge?: { label: string; tone: 'trial' | 'neutral' };
   subtitle?: string;
   right?: ReactNode;
   onPress?: () => void;
@@ -38,9 +41,19 @@ export function Row({
   const content = (
     <View style={[styles.row, !last && { borderBottomColor: p.separator, borderBottomWidth: StyleSheet.hairlineWidth }]}>
       <View style={{ flex: 1 }}>
-        <Text style={[styles.rowTitle, { color: danger ? p.danger : p.text }]} numberOfLines={1}>
-          {title}
-        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={[styles.rowTitle, { color: danger ? p.danger : p.text, flexShrink: 1 }]} numberOfLines={1}>
+            {title}
+          </Text>
+          {badge ? (
+            <View
+              style={[styles.badge, { backgroundColor: badge.tone === 'trial' ? p.warningBg : p.chipBg }]}
+              accessibilityLabel={badge.label}
+            >
+              <Text style={[styles.badgeText, { color: badge.tone === 'trial' ? p.warningText : p.chipText }]}>{badge.label}</Text>
+            </View>
+          ) : null}
+        </View>
         {subtitle ? (
           <Text style={[styles.rowSubtitle, { color: p.secondaryText }]} numberOfLines={2}>
             {subtitle}
@@ -155,5 +168,7 @@ export const styles = StyleSheet.create({
   fieldLabel: { fontSize: 13, marginBottom: 4 },
   fieldInput: { fontSize: 17, paddingVertical: 4 },
   fieldError: { fontSize: 13, marginTop: 4 },
+  badge: { borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, marginLeft: 8 },
+  badgeText: { fontSize: 12, fontWeight: '600' },
   chip: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 16, marginRight: 8, marginBottom: 8 },
 });
