@@ -39,9 +39,16 @@ export function formatYMD({ y, m, d }: YMD): LocalDate {
   return `${pad(y, 4)}-${pad(m)}-${pad(d)}`;
 }
 
-/** Today's date in the device's local time zone. */
-export function toLocalDate(now: Date): LocalDate {
-  return formatYMD({ y: now.getFullYear(), m: now.getMonth() + 1, d: now.getDate() });
+/**
+ * Today's date in the device's current time zone. The app always uses the device zone;
+ * `timeZone` (IANA name) exists so tests can show what a zone change does at one instant.
+ */
+export function toLocalDate(now: Date, timeZone?: string): LocalDate {
+  if (!timeZone) return formatYMD({ y: now.getFullYear(), m: now.getMonth() + 1, d: now.getDate() });
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' })
+    .formatToParts(now)
+    .reduce<Record<string, number>>((acc, p) => (p.type === 'literal' ? acc : { ...acc, [p.type]: Number(p.value) }), {});
+  return formatYMD({ y: parts.year, m: parts.month, d: parts.day });
 }
 
 /** A local Date at the given hour on the given local date. */

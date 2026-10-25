@@ -23,6 +23,11 @@ export interface Subscription {
    * (Jan 31 -> Feb 28 -> Mar 31).
    */
   anchorDate: LocalDate;
+  /**
+   * Set when the anchor is the very first charge (a new subscription), so no earlier
+   * charge is projected backwards as "paid". Null or absent means it was already running.
+   */
+  startDate?: LocalDate | null;
   categoryIds: string[];
   notes: string;
   manageUrl: string;

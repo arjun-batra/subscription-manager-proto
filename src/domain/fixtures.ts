@@ -10,6 +10,7 @@ export function sub(partial: Partial<Subscription> & { cycle?: Cycle } = {}): Su
     currency: partial.currency ?? 'CAD',
     cycle: partial.cycle ?? { unit: 'month', every: 1 },
     anchorDate: partial.anchorDate ?? '2026-11-05',
+    startDate: partial.startDate ?? null,
     categoryIds: partial.categoryIds ?? [],
     notes: partial.notes ?? '',
     manageUrl: partial.manageUrl ?? '',

@@ -1,6 +1,7 @@
 import { sub, settings } from './fixtures';
 import { toLocalDate } from './dates';
 import { formatMoney } from './money';
+import { nextCharge } from './schedule';
 import { chargesPerMonth, computeMonthTotals, computeTotals } from './totals';
 import { UNCATEGORIZED_ID } from './types';
 
@@ -124,5 +125,64 @@ describe('formatMoney', () => {
     expect(formatMoney(9.999, 'CAD')).toBe('CA$10.00');
     expect(formatMoney(1500, 'JPY')).toBe('¥1,500');
     expect(formatMoney(3, 'CHF')).toBe('3.00 CHF');
+  });
+});
+
+describe('first charge in the future (new subscription)', () => {
+  it('does not count a backwards-projected charge as paid', () => {
+    const existing = sub({ amount: 10, anchorDate: '2026-11-15' });
+    const fresh = sub({ amount: 10, anchorDate: '2026-11-15', startDate: '2026-11-15' });
+    expect(computeMonthTotals([existing], settings(), '2026-10-25')).toMatchObject({ thisMonth: 10, paidSoFar: 10, stillDue: 0 });
+    expect(computeMonthTotals([fresh], settings(), '2026-10-25')).toMatchObject({ thisMonth: 0, paidSoFar: 0, stillDue: 0 });
+    expect(computeMonthTotals([fresh], settings(), '2026-11-01')).toMatchObject({ thisMonth: 10, paidSoFar: 0, stillDue: 10 });
+    expect(computeMonthTotals([fresh], settings(), '2026-11-20')).toMatchObject({ thisMonth: 10, paidSoFar: 10, stillDue: 0 });
+  });
+
+  it('starts the upcoming date at the first charge', () => {
+    const fresh = sub({ cycle: { unit: 'week', every: 1 }, anchorDate: '2026-11-15', startDate: '2026-11-15' });
+    expect(nextCharge(fresh, '2026-10-25')).toBe('2026-11-15');
+    expect(nextCharge({ ...fresh, startDate: null }, '2026-10-25')).toBe('2026-10-25');
+  });
+});
+
+describe('category totals with missing rates', () => {
+  it('names the excluded items on each affected category, including Uncategorized', () => {
+    const usd = sub({ name: 'GitHub', currency: 'USD', categoryIds: ['c3'] });
+    const eur = sub({ name: 'Spotify EU', currency: 'EUR', categoryIds: ['c1', 'c3'] });
+    const loose = sub({ name: 'VPN', currency: 'USD' });
+    const ok = sub({ name: 'Crave', categoryIds: ['c1'] });
+    const t = computeTotals([usd, eur, loose, ok], cats, settings());
+    const by = Object.fromEntries(t.categories.map((c) => [c.id, c.missingRate.map((s) => s.name)]));
+    expect(by).toEqual({ c1: ['Spotify EU'], c2: [], c3: ['GitHub', 'Spotify EU'], [UNCATEGORIZED_ID]: ['VPN'] });
+    expect(t.categories.find((c) => c.id === 'c1')!.count).toBe(1);
+  });
+});
+
+describe('time-zone change moves "today" (FR-019)', () => {
+  // Jest workers can't switch the process time zone, so the zone is passed explicitly.
+  // The app calls toLocalDate(new Date()) with the device zone and re-reads it when
+  // the app becomes active and every 30 s, so a zone change shows up as a new "today".
+  it('matches the device zone when no zone is given', () => {
+    const at = new Date(2026, 9, 31, 23, 59);
+    expect(toLocalDate(at, Intl.DateTimeFormat().resolvedOptions().timeZone)).toBe(toLocalDate(at));
+  });
+
+  it('recomputes the month for the new zone at the same instant', () => {
+    // 2026-11-01 03:30 UTC is Oct 31 23:30 in Toronto but already Nov 1 in London.
+    const instant = new Date(Date.UTC(2026, 10, 1, 3, 30));
+    const subs = [sub({ amount: 10, anchorDate: '2026-10-31' }), sub({ amount: 5, anchorDate: '2026-11-01' })];
+
+    const torontoToday = toLocalDate(instant, 'America/Toronto');
+    expect(torontoToday).toBe('2026-10-31');
+    expect(computeMonthTotals(subs, settings(), torontoToday)).toMatchObject({ thisMonth: 15, stillDue: 10, paidSoFar: 5 });
+
+    const londonToday = toLocalDate(instant, 'Europe/London');
+    expect(londonToday).toBe('2026-11-01');
+    // New month: Nov 1 is due today (still due) and Nov 30 is still due; October no longer counts.
+    expect(computeMonthTotals(subs, settings(), londonToday)).toMatchObject({ thisMonth: 15, stillDue: 15, paidSoFar: 0 });
+
+    // Flying west the other way moves "today" back a day across the month boundary.
+    expect(toLocalDate(new Date(Date.UTC(2026, 10, 1, 7, 30)), 'America/Los_Angeles')).toBe('2026-11-01');
+    expect(toLocalDate(new Date(Date.UTC(2026, 10, 1, 6, 30)), 'America/Los_Angeles')).toBe('2026-10-31');
   });
 });

@@ -7,13 +7,14 @@ import {
   reminderHealth,
   RENEWAL_BUDGET,
 } from './reminders';
+import { cycleShorterThanLead } from './schedule';
 
 const now = new Date(2026, 9, 25, 10, 0); // Oct 25 2026, 10:00 local
 
 describe('reminders', () => {
   it('fires 2 days before at 9:00 local by default', () => {
     const r = nextReminder(sub({ id: 'a', anchorDate: '2026-11-05' }), settings(), now)!;
-    expect(r.id).toBe('renew:a:2026-11-05');
+    expect(r.id).toMatch(/^renew:a:2026-11-05:/);
     expect(r.fireAt).toEqual(new Date(2026, 10, 3, 9, 0));
   });
 
@@ -77,4 +78,95 @@ describe('reminders', () => {
       expect(h).toMatchObject({ ok: false, reason: 'missing' });
     });
   });
+
+  describe('re-sync after edits (FR-009)', () => {
+    const base = sub({ id: 'e1', name: 'Netflix', amount: 16.49, anchorDate: '2026-11-05' });
+    const pendingFor = (subs: ReturnType<typeof sub>[], st = settings()) =>
+      planReminders(subs, st, now).map((p) => p.id);
+
+    it('changes nothing when nothing changed', () => {
+      const plan = planReminders([base], settings(), now);
+      expect(diffReminders(plan, pendingFor([base]))).toEqual({ toSchedule: [], toCancel: [] });
+    });
+
+    it('replaces the reminder after a rename', () => {
+      const pending = pendingFor([base]);
+      const plan = planReminders([{ ...base, name: 'Netflix Premium' }], settings(), now);
+      const d = diffReminders(plan, pending);
+      expect(d.toCancel).toEqual(pending);
+      expect(d.toSchedule).toHaveLength(1);
+      expect(d.toSchedule[0].title).toBe('Netflix Premium renews in 2 days');
+    });
+
+    it('replaces the reminder after an amount or currency change', () => {
+      const pending = pendingFor([base]);
+      for (const edited of [{ ...base, amount: 22.99 }, { ...base, currency: 'USD' }]) {
+        const plan = planReminders([edited], settings(), now);
+        const d = diffReminders(plan, pending);
+        expect(d.toCancel).toEqual(pending);
+        expect(d.toSchedule.map((r) => r.body)).toEqual([plan[0].body]);
+      }
+      expect(planReminders([{ ...base, amount: 22.99 }], settings(), now)[0].body).toBe('CA$22.99 on 2026-11-05');
+    });
+
+    it('replaces every reminder after a lead-time or time-of-day change', () => {
+      const subs = [base, sub({ id: 'e2', anchorDate: '2026-11-20' })];
+      const pending = pendingFor(subs);
+      const lead = planReminders(subs, settings({ leadDays: 7 }), now);
+      const d1 = diffReminders(lead, pending);
+      expect(d1.toCancel.sort()).toEqual([...pending].sort());
+      expect(d1.toSchedule.map((r) => r.fireAt)).toEqual([new Date(2026, 9, 29, 9, 0), new Date(2026, 10, 13, 9, 0)]);
+      expect(d1.toSchedule[0].title).toBe('Netflix renews in 7 days');
+
+      const hour = planReminders(subs, settings({ reminderHour: 20 }), now);
+      const d2 = diffReminders(hour, pending);
+      expect(d2.toCancel.sort()).toEqual([...pending].sort());
+      expect(d2.toSchedule.map((r) => r.fireAt.getHours())).toEqual([20, 20]);
+    });
+
+    it('replaces the reminder after the date moves', () => {
+      const pending = pendingFor([base]);
+      const d = diffReminders(planReminders([{ ...base, anchorDate: '2026-11-12' }], settings(), now), pending);
+      expect(d.toCancel).toEqual(pending);
+      expect(d.toSchedule[0].chargeDate).toBe('2026-11-12');
+    });
+  });
+
+  describe('cycle shorter than the lead time', () => {
+    it('still finds a future reminder for a daily item with a 2-day lead after 9:00', () => {
+      const r = nextReminder(sub({ anchorDate: '2026-10-01', cycle: { unit: 'day', every: 1 } }), settings(), now)!;
+      expect(r).not.toBeNull();
+      expect(r.fireAt.getTime()).toBeGreaterThan(now.getTime());
+      expect(r.chargeDate).toBe('2026-10-28'); // fires Oct 26 9:00
+    });
+
+    it('still finds one for every 3 days with a 7-day lead', () => {
+      const r = nextReminder(
+        sub({ anchorDate: '2026-10-01', cycle: { unit: 'day', every: 3 } }),
+        settings({ leadDays: 7 }),
+        now,
+      )!;
+      expect(r).not.toBeNull();
+      expect(r.fireAt.getTime()).toBeGreaterThan(now.getTime());
+      expect(r.chargeDate).toBe('2026-11-03');
+      expect(r.fireAt).toEqual(new Date(2026, 9, 27, 9, 0)); // Oct 31's reminder (Oct 24) already passed
+    });
+
+    it('flags the cycle as shorter than the lead', () => {
+      expect(cycleShorterThanLead({ unit: 'day', every: 1 }, 2)).toBe(true);
+      expect(cycleShorterThanLead({ unit: 'day', every: 3 }, 7)).toBe(true);
+      expect(cycleShorterThanLead({ unit: 'week', every: 1 }, 7)).toBe(false);
+      expect(cycleShorterThanLead({ unit: 'month', every: 1 }, 7)).toBe(false);
+    });
+  });
+
+  it('never reminds before the first charge of a new subscription', () => {
+    const r = nextReminder(
+      sub({ anchorDate: '2026-12-15', startDate: '2026-12-15', cycle: { unit: 'week', every: 1 } }),
+      settings(),
+      now,
+    )!;
+    expect(r.chargeDate).toBe('2026-12-15');
+  });
 });
+

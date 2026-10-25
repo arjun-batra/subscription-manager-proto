@@ -49,6 +49,9 @@ const HEADER_ALIASES: Record<string, string[]> = {
   categories: ['categories', 'category'],
   notes: ['notes', 'note'],
   manageUrl: ['manage url', 'manage_url', 'url', 'link'],
+  status: ['status'],
+  reminders: ['reminders', 'reminder'],
+  start: ['first charge date', 'start date', 'first charge'],
 };
 const REQUIRED = ['name', 'amount', 'currency', 'cycle', 'next'] as const;
 const LABEL: Record<string, string> = {
@@ -68,7 +71,17 @@ export const CSV_COLUMNS = [
   'categories',
   'notes',
   'manage url',
+  'status',
+  'reminders',
+  'first charge date',
 ];
+
+const FORMULA_START = /^[=+\-@\t\r]/;
+
+/** Undoes the export's formula guard: a leading ' before = + - @ is dropped. */
+function unguard(v: string): string {
+  return v.startsWith("'") && FORMULA_START.test(v.slice(1)) ? v.slice(1) : v;
+}
 
 /** "monthly", "every 2 weeks", "quarterly", "every 10 days", ... */
 export function parseCycle(raw: string): Cycle | null {
@@ -101,6 +114,10 @@ export interface ImportDraft {
   categoryNames: string[];
   notes: string;
   manageUrl: string;
+  cancelled: boolean;
+  remindersEnabled: boolean;
+  /** Set when the file marks this date as the first charge (nothing paid before it). */
+  startDate: LocalDate | null;
 }
 
 export type RowStatus = 'valid' | 'duplicate' | 'invalid';
@@ -141,7 +158,7 @@ export function previewImport(text: string, existing: Subscription[]): ImportPre
   }
 
   const seen = new Set(existing.filter((s) => !s.cancelled).map((s) => duplicateKey(s.name, s.amount, s.cycle)));
-  const get = (r: string[], key: string) => (idx[key] === undefined ? '' : (r[idx[key]] ?? '').trim());
+  const get = (r: string[], key: string) => (idx[key] === undefined ? '' : unguard((r[idx[key]] ?? '').trim()));
 
   const out: PreviewRow[] = rows.slice(1).map((r, i) => {
     const line = i + 2;
@@ -157,6 +174,12 @@ export function previewImport(text: string, existing: Subscription[]): ImportPre
     if (!isValidCurrency(currency)) problems.push('currency must be a 3-letter code');
     if (!cycle) problems.push('cycle not recognised');
     if (!isValidLocalDate(anchorDate)) problems.push('date must be YYYY-MM-DD');
+    const status = get(r, 'status').toLowerCase();
+    if (!['', 'active', 'cancelled', 'canceled'].includes(status)) problems.push('status must be active or cancelled');
+    const rem = get(r, 'reminders').toLowerCase();
+    if (!['', 'on', 'off', 'yes', 'no', 'true', 'false'].includes(rem)) problems.push('reminders must be on or off');
+    const startDate = get(r, 'start');
+    if (startDate && !isValidLocalDate(startDate)) problems.push('first charge date must be YYYY-MM-DD');
     if (problems.length || !cycle) {
       return { line, status: 'invalid', reason: problems.join('; '), checked: false };
     }
@@ -172,6 +195,9 @@ export function previewImport(text: string, existing: Subscription[]): ImportPre
         .filter(Boolean),
       notes: get(r, 'notes'),
       manageUrl: get(r, 'manageUrl'),
+      cancelled: status === 'cancelled' || status === 'canceled',
+      remindersEnabled: !['off', 'no', 'false'].includes(rem),
+      startDate: startDate || null,
     };
     const key = duplicateKey(name, amount, cycle);
     if (seen.has(key)) {
@@ -197,8 +223,13 @@ function cycleToCsv(c: Cycle): string {
   return `every ${c.every} ${c.unit}s`;
 }
 
-function esc(v: string): string {
-  return /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+/**
+ * Quotes when needed, and prefixes ' to cells that a spreadsheet would run as a
+ * formula (= + - @, tab, CR), per OWASP CSV-injection guidance. Import strips it again.
+ */
+export function esc(v: string): string {
+  const safe = FORMULA_START.test(v) ? `'${v}` : v;
+  return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
 /** Export in the same columns the importer reads, so files round-trip. */
@@ -216,6 +247,9 @@ export function toCsv(subs: Subscription[], categories: Category[]): string {
         s.categoryIds.map((id) => names.get(id)).filter(Boolean).join('; '),
         s.notes,
         s.manageUrl,
+        s.cancelled ? 'cancelled' : 'active',
+        s.remindersEnabled ? 'on' : 'off',
+        s.startDate ?? '',
       ]
         .map(esc)
         .join(','),
@@ -225,4 +259,5 @@ export function toCsv(subs: Subscription[], categories: Category[]): string {
 }
 
 export const CSV_TEMPLATE =
-  CSV_COLUMNS.join(',') + '\r\nNetflix,16.49,CAD,monthly,2026-11-05,Streaming,Family plan,https://www.netflix.com/account\r\n';
+  CSV_COLUMNS.join(',') +
+  '\r\nNetflix,16.49,CAD,monthly,2026-11-05,Streaming,Family plan,https://www.netflix.com/account,active,on,\r\n';

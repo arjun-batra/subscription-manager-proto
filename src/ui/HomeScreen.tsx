@@ -1,7 +1,8 @@
 import { useMemo } from 'react';
 import { Linking, Pressable, ScrollView, Text, View } from 'react-native';
 
-import { describeCycle, nextOnOrAfter, shortDate } from '../domain/dates';
+import { describeCycle, shortDate } from '../domain/dates';
+import { nextCharge } from '../domain/schedule';
 import { formatMoney } from '../domain/money';
 import { computeMonthTotals, computeTotals } from '../domain/totals';
 import type { Subscription } from '../domain/types';
@@ -22,7 +23,7 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
     () =>
       subscriptions
         .filter((s) => !s.cancelled)
-        .map((s) => ({ s, next: nextOnOrAfter(s.anchorDate, s.cycle, today) }))
+        .map((s) => ({ s, next: nextCharge(s, today) }))
         .sort((a, b) => (a.next < b.next ? -1 : a.next > b.next ? 1 : a.s.name.localeCompare(b.s.name))),
     [subscriptions, today],
   );

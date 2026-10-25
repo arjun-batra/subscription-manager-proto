@@ -1,4 +1,4 @@
-import { CSV_TEMPLATE, importAllValidRows, importSelectedRows, parseCsv, parseCycle, previewImport, toCsv } from './csv';
+import { CSV_TEMPLATE, importAllValidRows, importSelectedRows, parseCsv, parseCycle, previewImport, toCsv, esc } from './csv';
 import { sub } from './fixtures';
 
 describe('parseCsv', () => {
@@ -45,6 +45,9 @@ describe('previewImport', () => {
       categoryNames: ['A', 'B'],
       notes: 'n3',
       manageUrl: 'https://x.example/3',
+      cancelled: false,
+      remindersEnabled: true,
+      startDate: null,
     });
   });
 
@@ -95,13 +98,46 @@ describe('toCsv', () => {
     const cats = [{ id: 'c1', name: 'Streaming' }];
     const subs = [
       sub({ name: 'A, "quoted"', amount: 9.5, cycle: { unit: 'week', every: 2 }, categoryIds: ['c1'], notes: 'line1\nline2' }),
-      sub({ name: 'B', amount: 100, cycle: { unit: 'year', every: 1 }, anchorDate: '2027-01-31' }),
+      sub({
+        name: '=HYPERLINK("x")',
+        amount: 100,
+        cycle: { unit: 'year', every: 1 },
+        anchorDate: '2027-01-31',
+        startDate: '2027-01-31',
+        notes: '-5 off, @promo',
+        cancelled: true,
+        remindersEnabled: false,
+      }),
     ];
     const p = previewImport(toCsv(subs, cats), []);
     if (!p.ok) throw new Error(p.error);
     expect(p.rows.map((r) => r.draft)).toEqual([
-      { name: 'A, "quoted"', amount: 9.5, currency: 'CAD', cycle: { unit: 'week', every: 2 }, anchorDate: '2026-11-05', categoryNames: ['Streaming'], notes: 'line1\nline2', manageUrl: '' },
-      { name: 'B', amount: 100, currency: 'CAD', cycle: { unit: 'year', every: 1 }, anchorDate: '2027-01-31', categoryNames: [], notes: '', manageUrl: '' },
+      { name: 'A, "quoted"', amount: 9.5, currency: 'CAD', cycle: { unit: 'week', every: 2 }, anchorDate: '2026-11-05', categoryNames: ['Streaming'], notes: 'line1\nline2', manageUrl: '', cancelled: false, remindersEnabled: true, startDate: null },
+      { name: '=HYPERLINK("x")', amount: 100, currency: 'CAD', cycle: { unit: 'year', every: 1 }, anchorDate: '2027-01-31', categoryNames: [], notes: '-5 off, @promo', manageUrl: '', cancelled: true, remindersEnabled: false, startDate: '2027-01-31' },
     ]);
+  });
+
+  it('exports the cancelled flag and reminder setting', () => {
+    const csv = toCsv([sub({ name: 'Old', cancelled: true, remindersEnabled: false })], []);
+    const [header, row] = csv.split('\r\n');
+    expect(header).toBe('name,amount,currency,cycle,next charge date,categories,notes,manage url,status,reminders,first charge date');
+    expect(row.split(',').slice(-3)).toEqual(['cancelled', 'off', '']);
+  });
+
+  it('guards cells a spreadsheet would run as formulas', () => {
+    expect(esc('=1+1')).toBe("'=1+1");
+    expect(esc('+1')).toBe("'+1");
+    expect(esc('-1')).toBe("'-1");
+    expect(esc('@SUM(A1)')).toBe("'@SUM(A1)");
+    expect(esc('\tx')).toBe("'\tx");
+    expect(esc('=A1,B1')).toBe(`"'=A1,B1"`);
+    expect(esc('Netflix')).toBe('Netflix');
+    const csv = toCsv([sub({ name: '=cmd|calc', notes: '@x' })], []);
+    expect(csv.split('\r\n')[1].startsWith("'=cmd|calc,")).toBe(true);
+  });
+
+  it('rejects unknown status or reminders values', () => {
+    const p = previewImport('name,amount,currency,cycle,next charge date,status,reminders\nA,1,CAD,monthly,2026-11-01,paused,maybe', []);
+    expect(p.ok && p.rows[0]).toMatchObject({ status: 'invalid', reason: 'status must be active or cancelled; reminders must be on or off' });
   });
 });

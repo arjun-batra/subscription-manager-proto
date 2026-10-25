@@ -1,10 +1,11 @@
 import { addDays, atLocalTime, firstIndexOnOrAfter, occurrence, toLocalDate } from './dates';
 import { formatMoney } from './money';
+import { minCycleDays } from './schedule';
 import type { LocalDate, Settings, Subscription } from './types';
 
 /** iOS keeps at most 64 pending local notifications per app. */
 export const IOS_PENDING_LIMIT = 64;
-/** Renewal reminders we keep pending: the soonest 60 ("scheduling window"). */
+/** Renewal reminders we keep pending: each item's next reminder, soonest 60 items ("scheduling window"). */
 export const RENEWAL_BUDGET = 60;
 /** One slot is kept for "send test notification"; the rest are spare. */
 export const TEST_SLOTS = 1;
@@ -13,7 +14,11 @@ export const REMINDER_PREFIX = 'renew:';
 export const TEST_ID = 'test-notification';
 
 export interface PlannedReminder {
-  /** Deterministic id so re-planning is idempotent: renew:<subId>:<chargeDate>. */
+  /**
+   * Deterministic id: renew:<subId>:<chargeDate>:<fireAt>:<contentHash>.
+   * Any change to the fire time or the text changes the id, so the diff cancels the
+   * stale notification and schedules the new one. Unchanged plans stay idempotent.
+   */
   id: string;
   subId: string;
   chargeDate: LocalDate;
@@ -22,17 +27,29 @@ export interface PlannedReminder {
   body: string;
 }
 
+/** Small stable string hash (FNV-1a, 32-bit), base 36. Not for security, just change detection. */
+export function contentHash(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36);
+}
+
 function reminderFor(sub: Subscription, chargeDate: LocalDate, settings: Settings): PlannedReminder {
   const fireAt = atLocalTime(addDays(chargeDate, -settings.leadDays), settings.reminderHour);
   const when =
     settings.leadDays === 0 ? 'today' : settings.leadDays === 1 ? 'tomorrow' : `in ${settings.leadDays} days`;
+  const title = `${sub.name} renews ${when}`;
+  const body = `${formatMoney(sub.amount, sub.currency)} on ${chargeDate}`;
   return {
-    id: `${REMINDER_PREFIX}${sub.id}:${chargeDate}`,
+    id: `${REMINDER_PREFIX}${sub.id}:${chargeDate}:${fireAt.getTime().toString(36)}:${contentHash(`${title}\n${body}`)}`,
     subId: sub.id,
     chargeDate,
     fireAt,
-    title: `${sub.name} renews ${when}`,
-    body: `${formatMoney(sub.amount, sub.currency)} on ${chargeDate}`,
+    title,
+    body,
   };
 }
 
@@ -48,8 +65,12 @@ export function nextReminder(
 ): PlannedReminder | null {
   if (sub.cancelled || !sub.remindersEnabled) return null;
   const today = toLocalDate(now);
-  const start = firstIndexOnOrAfter(sub.anchorDate, sub.cycle, today);
-  for (let k = start; k < start + 3; k += 1) {
+  const from = sub.startDate && sub.startDate > today ? sub.startDate : today;
+  const start = firstIndexOnOrAfter(sub.anchorDate, sub.cycle, from);
+  // When the cycle is shorter than the lead time, several upcoming charges can already
+  // be inside the lead window; keep looking until one's reminder is still in the future.
+  const tries = Math.ceil(settings.leadDays / minCycleDays(sub.cycle)) + 2;
+  for (let k = start; k < start + tries; k += 1) {
     const r = reminderFor(sub, occurrence(sub.anchorDate, sub.cycle, k), settings);
     if (r.fireAt.getTime() > now.getTime()) return r;
   }

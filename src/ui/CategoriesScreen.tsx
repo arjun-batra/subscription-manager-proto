@@ -86,7 +86,11 @@ export function CategoriesScreen() {
             <Row
               key={c.id}
               title={c.name}
-              subtitle={`${c.count} subscription${c.count === 1 ? '' : 's'} · ${formatMoney(c.yearly, settings.homeCurrency)}/yr${isUncat ? '' : ' · tap to rename or delete'}`}
+              subtitle={`${c.count} subscription${c.count === 1 ? '' : 's'} · ${formatMoney(c.yearly, settings.homeCurrency)}/yr${
+                c.missingRate.length
+                  ? ` · excludes ${c.missingRate.length} with no ${[...new Set(c.missingRate.map((s) => s.currency))].join('/')} rate: ${c.missingRate.map((s) => s.name).join(', ')}`
+                  : ''
+              }${isUncat ? '' : ' · tap to rename or delete'}`}
               right={formatMoney(c.monthly, settings.homeCurrency)}
               last={i === totals.categories.length - 1}
               onPress={

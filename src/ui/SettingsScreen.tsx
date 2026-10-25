@@ -5,7 +5,8 @@ import { useState } from 'react';
 import { Alert, ScrollView, Text, TextInput, View } from 'react-native';
 
 import { CSV_TEMPLATE, previewImport, toCsv, type PreviewRow } from '../domain/csv';
-import { isValidCurrency } from '../domain/money';
+import { changeHomeCurrency, isValidCurrency } from '../domain/money';
+import { cycleShorterThanLead } from '../domain/schedule';
 import { sendTestNotification, requestPermission } from '../services/notifications';
 import { Card, Chip, Field, Row, SectionHeader } from './components';
 import { useStore } from './store';
@@ -34,7 +35,15 @@ export function SettingsScreen({ onPreview }: { onPreview: (rows: PreviewRow[]) 
     const code = home.trim().toUpperCase();
     if (!isValidCurrency(code)) return setHomeError('Use a 3-letter code, like CAD.');
     setHomeError('');
-    await store.saveSettings({ ...settings, homeCurrency: code });
+    const { settings: next, cleared } = changeHomeCurrency(settings, code);
+    if (next === settings) return;
+    await store.saveSettings(next);
+    if (cleared.length) {
+      Alert.alert(
+        'Exchange rates cleared',
+        `Your rates were set against ${settings.homeCurrency}, so they no longer apply. Enter new rates to ${code} for ${cleared.join(', ')}. Until then, those items are left out of totals.`,
+      );
+    }
   }
 
   async function setRate(code: string, text: string) {
@@ -120,6 +129,19 @@ export function SettingsScreen({ onPreview }: { onPreview: (rows: PreviewRow[]) 
             />
           ))}
         </View>
+        {(() => {
+          const short = subscriptions.filter(
+            (s) => !s.cancelled && s.remindersEnabled && cycleShorterThanLead(s.cycle, settings.leadDays),
+          );
+          return short.length ? (
+            <View accessibilityRole="alert" style={{ backgroundColor: p.warningBg, marginHorizontal: 12, marginBottom: 8, padding: 12, borderRadius: 10 }}>
+              <Text style={{ color: p.warningText, fontSize: 15 }}>
+                {short.map((s) => s.name).join(', ')} renew{short.length === 1 ? 's' : ''} more often than {settings.leadDays} days,
+                so {short.length === 1 ? 'its reminder' : 'their reminders'} can arrive before the previous charge.
+              </Text>
+            </View>
+          ) : null;
+        })()}
         <Text style={{ color: p.text, fontSize: 17, paddingHorizontal: 16 }}>At</Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', padding: 12, paddingBottom: 4 }}>
           {[8, 9, 12, 18, 20].map((h) => (

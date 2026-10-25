@@ -1,5 +1,6 @@
-import { monthBounds, occurrencesBetween } from './dates';
+import { monthBounds } from './dates';
 import { toHome } from './money';
+import { chargesBetween } from './schedule';
 import {
   UNCATEGORIZED_ID,
   UNCATEGORIZED_NAME,
@@ -40,6 +41,8 @@ export interface NormalizedTotal {
 export interface CategoryTotal extends NormalizedTotal {
   id: string;
   name: string;
+  /** Active items in this category left out because their currency has no rate yet. */
+  missingRate: Subscription[];
 }
 
 export interface TotalsResult {
@@ -64,6 +67,11 @@ export function computeTotals(
   settings: Settings,
 ): TotalsResult {
   const known = new Set(categories.map((c) => c.id));
+  const catIds = (sub: Subscription) => {
+    const ids = [...new Set(sub.categoryIds.filter((id) => known.has(id)))];
+    return ids.length ? ids : [UNCATEGORIZED_ID];
+  };
+  const missingPerCat = new Map<string, Subscription[]>();
   const perCat = new Map<string, NormalizedTotal>();
   for (const c of categories) perCat.set(c.id, { monthly: 0, yearly: 0, count: 0 });
   perCat.set(UNCATEGORIZED_ID, { monthly: 0, yearly: 0, count: 0 });
@@ -75,14 +83,14 @@ export function computeTotals(
     const monthly = toHome(monthlyEquivalent(sub), sub.currency, settings);
     if (monthly === null) {
       missingRate.push(sub);
+      for (const id of catIds(sub)) missingPerCat.set(id, [...(missingPerCat.get(id) ?? []), sub]);
       continue;
     }
     overall.monthly += monthly;
     overall.yearly += monthly * 12;
     overall.count += 1;
 
-    const ids = [...new Set(sub.categoryIds.filter((id) => known.has(id)))];
-    for (const id of ids.length ? ids : [UNCATEGORIZED_ID]) {
+    for (const id of catIds(sub)) {
       const t = perCat.get(id)!;
       t.monthly += monthly;
       t.yearly += monthly * 12;
@@ -93,8 +101,18 @@ export function computeTotals(
   const sorted = [...categories].sort((a, b) =>
     a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
   );
-  const result: CategoryTotal[] = sorted.map((c) => ({ id: c.id, name: c.name, ...perCat.get(c.id)! }));
-  result.push({ id: UNCATEGORIZED_ID, name: UNCATEGORIZED_NAME, ...perCat.get(UNCATEGORIZED_ID)! });
+  const result: CategoryTotal[] = sorted.map((c) => ({
+    id: c.id,
+    name: c.name,
+    ...perCat.get(c.id)!,
+    missingRate: missingPerCat.get(c.id) ?? [],
+  }));
+  result.push({
+    id: UNCATEGORIZED_ID,
+    name: UNCATEGORIZED_NAME,
+    ...perCat.get(UNCATEGORIZED_ID)!,
+    missingRate: missingPerCat.get(UNCATEGORIZED_ID) ?? [],
+  });
 
   const sum = result.reduce((acc, c) => acc + c.monthly, 0);
   return {
@@ -136,7 +154,7 @@ export function computeMonthTotals(
   const missing = new Map<string, Subscription>();
 
   for (const sub of active(subs)) {
-    for (const date of occurrencesBetween(sub.anchorDate, sub.cycle, start, end)) {
+    for (const date of chargesBetween(sub, start, end)) {
       const homeAmount = toHome(sub.amount, sub.currency, settings);
       charges.push({ sub, date, homeAmount });
       if (homeAmount === null) {

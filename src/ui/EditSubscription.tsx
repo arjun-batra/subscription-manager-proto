@@ -5,6 +5,7 @@ import { Alert, KeyboardAvoidingView, Linking, Platform, ScrollView, Switch, Tex
 import { newId } from '../data/db';
 import { formatYMD, isValidLocalDate, parseLocalDate, toLocalDate } from '../domain/dates';
 import { COMMON_CURRENCIES, isValidCurrency } from '../domain/money';
+import { cycleShorterThanLead, nextCharge } from '../domain/schedule';
 import type { Cycle, Subscription } from '../domain/types';
 import { Button, Card, Chip, Field, Row, SectionHeader } from './components';
 import { useStore } from './store';
@@ -29,7 +30,10 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
   const [currency, setCurrency] = useState(existing?.currency ?? store.settings.homeCurrency);
   const [cycle, setCycle] = useState<Cycle>(existing?.cycle ?? { unit: 'month', every: 1 });
   const [custom, setCustom] = useState(existing ? !CYCLES.slice(0, 4).some((c) => sameCycle(c.cycle, existing.cycle)) : false);
-  const [date, setDate] = useState(existing?.anchorDate ?? store.today);
+  // Show the next upcoming charge, not the stored anchor (which can be months back).
+  const [initialDate] = useState(() => (existing ? nextCharge(existing, store.today) : store.today));
+  const [date, setDate] = useState(initialDate);
+  const [firstCharge, setFirstCharge] = useState(!!existing?.startDate);
   const [categoryIds, setCategoryIds] = useState<string[]>(existing?.categoryIds ?? []);
   const [notes, setNotes] = useState(existing?.notes ?? '');
   const [manageUrl, setManageUrl] = useState(existing?.manageUrl ?? '');
@@ -51,6 +55,11 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
     if (Object.keys(e).length) return;
     setSaving(true);
     const now = new Date().toISOString();
+    // Keep the original anchor when neither the date nor the cycle changed, so month-end
+    // rules still follow it (Jan 31 -> Feb 28 -> Mar 31).
+    const keepAnchor = !!existing && date === initialDate && sameCycle(cycle, existing.cycle);
+    const anchorDate = keepAnchor ? existing!.anchorDate : date;
+    const startDate = firstCharge ? (keepAnchor ? (existing!.startDate ?? date) : date) : null;
     try {
       await store.saveSubscription({
         id: existing?.id ?? newId(),
@@ -58,7 +67,8 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
         amount: amountNum,
         currency: currency.trim().toUpperCase(),
         cycle,
-        anchorDate: date,
+        anchorDate,
+        startDate,
         categoryIds,
         notes: notes.trim(),
         manageUrl: manageUrl.trim(),
@@ -169,6 +179,26 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
             <DateTimePicker value={pickerValue} mode="date" display={Platform.OS === 'ios' ? 'compact' : 'default'} onChange={onDate} />
           </View>
           {errors.date ? <Text style={{ color: p.danger, paddingHorizontal: 16, paddingBottom: 8 }}>{errors.date}</Text> : null}
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, paddingTop: 0 }}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={{ color: p.text, fontSize: 17 }}>This is the first charge</Text>
+              <Text style={{ color: p.secondaryText, fontSize: 14 }}>
+                Turn on for a new subscription, so nothing earlier counts as paid this month
+              </Text>
+            </View>
+            <Switch value={firstCharge} onValueChange={setFirstCharge} accessibilityLabel="This is the first charge" />
+          </View>
+          {reminders && !cancelled && cycleShorterThanLead(cycle, store.settings.leadDays) ? (
+            <View
+              accessibilityRole="alert"
+              style={{ backgroundColor: p.warningBg, margin: 12, marginTop: 0, padding: 12, borderRadius: 10 }}
+            >
+              <Text style={{ color: p.warningText, fontSize: 15 }}>
+                This renews more often than your reminder lead time ({store.settings.leadDays} days), so a reminder can
+                arrive before the previous charge, or skip ahead a charge. Choose a shorter lead in Settings.
+              </Text>
+            </View>
+          ) : null}
         </Card>
 
         <SectionHeader>Categories</SectionHeader>

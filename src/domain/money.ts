@@ -44,3 +44,17 @@ export const COMMON_CURRENCIES = ['CAD', 'USD', 'EUR', 'GBP', 'INR', 'AUD', 'JPY
 export function isValidCurrency(code: string): boolean {
   return /^[A-Z]{3}$/.test(code.trim().toUpperCase());
 }
+
+/**
+ * Rates are stored as "1 X = r home", so they mean nothing once the home currency
+ * changes. Changing it clears every rate; affected items then show "rate needed".
+ * Returns the codes that were cleared so the UI can tell the user.
+ */
+export function changeHomeCurrency(settings: Settings, code: string): { settings: Settings; cleared: string[] } {
+  const next = code.trim().toUpperCase();
+  if (next === settings.homeCurrency.toUpperCase()) return { settings, cleared: [] };
+  return {
+    settings: { ...settings, homeCurrency: next, rates: {}, ratesUpdatedAt: null },
+    cleared: Object.keys(settings.rates).sort(),
+  };
+}

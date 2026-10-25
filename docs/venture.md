@@ -19,6 +19,7 @@ with hand-entered rates (FR-008).
 Stretch (done): CSV import with checkbox preview (FR-013 spreadsheet import, FR-020 preview rules), CSV export
 (FR-012, CSV only), and the Manage Subscription row (FR-014, FR-024).
 Out: the install-expiry warning (FR-022, not needed with Expo Go), presets (FR-002, FR-021), trials (FR-004, FR-010),
+sort and search (FR-006), per-item lead time (part of FR-009), Manage URL validation (part of FR-014),
 statement import (FR-015), mark as paid (FR-016), widget (FR-017), JSON export and import.
 
 ## Kill or park criteria
