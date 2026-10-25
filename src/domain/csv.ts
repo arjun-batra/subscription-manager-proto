@@ -1,3 +1,4 @@
+import { formatLogo, normalizeLogo, parseLogo } from './logo';
 import { describeCycle, describeWeekdayRule, isValidCycle, isValidLocalDate, nextOnOrAfter, parseWeekdayRule } from './dates';
 import { isValidCurrency } from './money';
 import { MAX_PLAN_PAYMENTS } from './schedule';
@@ -57,6 +58,7 @@ const HEADER_ALIASES: Record<string, string[]> = {
   payments: ['total payments', 'number of payments', 'payments'],
   varies: ['varies', 'variable'],
   actuals: ['actuals', 'actual amounts'],
+  logo: ['logo', 'icon'],
 };
 const REQUIRED = ['name', 'amount', 'currency', 'cycle', 'next'] as const;
 const LABEL: Record<string, string> = {
@@ -83,6 +85,7 @@ export const CSV_COLUMNS = [
   'total payments',
   'varies',
   'actuals',
+  'logo',
 ];
 
 const FORMULA_START = /^[=+\-@\t\r]/;
@@ -153,6 +156,8 @@ export interface ImportDraft {
   variable: boolean;
   /** Logged actual amounts for past charges. */
   actuals: ActualCharge[];
+  /** Picked logo (`brand:…` / `icon:…`), or null for Automatic. */
+  logo: string | null;
 }
 
 /** Compact actuals cell: "2026-09-01=84.12; 2026-10-01=91.3" (date=amount pairs, ; separated). */
@@ -273,6 +278,8 @@ export function previewImport(text: string, existing: Subscription[]): ImportPre
       const off = actuals.find((a) => cycle && isValidLocalDate(anchorDate) && !onSchedule(a.date));
       if (off) problems.push(`actual for ${off.date} isn't a charge date`);
     }
+    const logoCell = parseLogo(get(r, 'logo'));
+    if ('error' in logoCell) problems.push(logoCell.error);
     if (problems.length || !cycle) {
       return { line, status: 'invalid', reason: problems.join('; '), checked: false };
     }
@@ -295,6 +302,7 @@ export function previewImport(text: string, existing: Subscription[]): ImportPre
       totalPayments,
       variable,
       actuals,
+      logo: 'ref' in logoCell ? formatLogo(logoCell.ref) || null : null,
     };
     const key = duplicateKey(name, amount, cycle);
     if (seen.has(key)) {
@@ -351,6 +359,7 @@ export function toCsv(subs: Subscription[], categories: Category[]): string {
         s.totalPayments ? String(s.totalPayments) : '',
         s.variable ? 'yes' : '',
         s.variable ? formatActuals(s.actuals) : '',
+        normalizeLogo(s.logo) ?? '',
       ]
         .map(esc)
         .join(','),
@@ -361,8 +370,8 @@ export function toCsv(subs: Subscription[], categories: Category[]): string {
 
 export const CSV_TEMPLATE =
   CSV_COLUMNS.join(',') +
-  '\r\nNetflix,16.49,CAD,monthly,2026-11-05,Streaming,Family plan,https://www.netflix.com/account,active,on,,,,,\r\n' +
-  'Phone,45,CAD,monthly,2026-11-10,Phone,Paying off the phone,,active,on,2026-03-10,,24,,\r\n' +
-  'Trial app,9.99,CAD,monthly,2026-12-01,,Free trial,,active,on,,2026-12-01,,,\r\n' +
-  'Hydro,85,CAD,every 2 months,2026-11-20,Utilities,Estimate,,active,on,,,,yes,2026-07-20=81.4; 2026-09-20=92.15\r\n' +
-  'Book club,12,CAD,monthly on the 2nd tue,2026-11-10,,2nd Tuesday,,active,on,,,,,\r\n';
+  '\r\nNetflix,16.49,CAD,monthly,2026-11-05,Streaming,Family plan,https://www.netflix.com/account,active,on,,,,,,\r\n' +
+  'Phone,45,CAD,monthly,2026-11-10,Phone,Paying off the phone,,active,on,2026-03-10,,24,,,icon:phone\r\n' +
+  'Trial app,9.99,CAD,monthly,2026-12-01,,Free trial,,active,on,,2026-12-01,,,,\r\n' +
+  'Hydro,85,CAD,every 2 months,2026-11-20,Utilities,Estimate,,active,on,,,,yes,2026-07-20=81.4; 2026-09-20=92.15,icon:bolt:amber\r\n' +
+  'Book club,12,CAD,monthly on the 2nd tue,2026-11-10,,2nd Tuesday,,active,on,,,,,,icon:book\r\n';

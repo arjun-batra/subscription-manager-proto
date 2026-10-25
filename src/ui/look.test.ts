@@ -2,6 +2,8 @@ import type { CategoryTotal } from '../domain/totals';
 import { UNCATEGORIZED_ID } from '../domain/types';
 import { BRANDS } from './brands/data';
 import {
+  autoLogoTile,
+  brandLogoTile,
   brandTile,
   categorySymbol,
   CHART_COLORS,
@@ -10,19 +12,41 @@ import {
   inkOn,
   LETTER_COLORS,
   letterTile,
+  logoSummary,
   matchBrand,
+  monogramFontSize,
   normalizeName,
+  resolveLogo,
+  searchLogos,
 } from './look';
+import { GENERIC_ICONS, ICON_COLORS, ICON_COLOR_NAMES } from './brands/icons';
 import { contrast, dark, light } from './palette';
 
 describe('brand marks', () => {
-  it('bundles about 30 single-path 24x24 marks with colours', () => {
-    expect(BRANDS.length).toBeGreaterThanOrEqual(28);
+  it('bundles single-path 24x24 marks and brand-colour monograms', () => {
+    expect(BRANDS.filter((b) => b.path).length).toBeGreaterThanOrEqual(40);
+    expect(BRANDS.filter((b) => !b.path).length).toBeGreaterThanOrEqual(30);
     expect(new Set(BRANDS.map((b) => b.slug)).size).toBe(BRANDS.length);
     for (const b of BRANDS) {
       expect(b.hex).toMatch(/^[0-9A-F]{6}$/);
-      expect(b.path).toMatch(/^[Mm][-0-9. ,a-zA-Z]+$/);
       expect(b.aliases.length).toBeGreaterThan(0);
+      if (b.path) {
+        expect(b.path).toMatch(/^[Mm][-0-9. ,a-zA-Z]+$/);
+        expect(b.monogram).toBeUndefined();
+      } else {
+        expect(b.monogram).toMatch(/^.{1,3}$/u);
+      }
+    }
+  });
+
+  it('no alias points at two brands', () => {
+    const seen = new Map<string, string>();
+    for (const b of BRANDS) {
+      for (const a of b.aliases) {
+        const k = normalizeName(a);
+        expect([k, seen.get(k) ?? b.slug]).toEqual([k, b.slug]);
+        seen.set(k, b.slug);
+      }
     }
   });
 
@@ -41,7 +65,49 @@ describe('brand marks', () => {
     ['Proton Unlimited', 'protonmail'],
     ['Crème Crunchyroll', null],
     ['Maximum Fitness', null],
-    ['Disney+', null],
+    ['Disney+', 'disneyplus'],
+    // Requested Canadian brands (monograms).
+    ['Rogers', 'rogers'],
+    ['Rogers Wireless', 'rogers'],
+    ['Sonnet', 'sonnet'],
+    ['Sonnet Insurance', 'sonnet'],
+    ["Canada's Wonderland", 'wonderland'],
+    ['Canada’s Wonderland Season Pass', 'wonderland'],
+    ['Wonderland', 'wonderland'],
+    ['Bell', 'bell'],
+    ['Telus', 'telus'],
+    ['Fido', 'fido'],
+    ['Koodo', 'koodo'],
+    ['Freedom Mobile', 'freedommobile'],
+    ['Crave', 'crave'],
+    ['Hydro One', 'hydroone'],
+    ['Toronto Hydro', 'torontohydro'],
+    ['Enbridge Gas', 'enbridge'],
+    ['GoodLife Fitness', 'goodlife'],
+    ['Presto', 'prestocard'],
+    ['CBC Gem', 'cbc'],
+    // Requested global brands.
+    ['Amazon', 'amazon'],
+    ['Prime', 'amazon'],
+    ['Amazon Prime', 'amazon'],
+    ['Prime Video', 'primevideo'],
+    ['Microsoft 365', 'microsoft365'],
+    ['Office 365', 'microsoft365'],
+    ['Microsoft', 'microsoft365'],
+    ['Xbox Game Pass', 'xbox'],
+    ['Cloudflare', 'cloudflare'],
+    ['Costco', 'costco'],
+    ['Costco Membership', 'costco'],
+    ['Grok', 'grok'],
+    ['SuperGrok', 'grok'],
+    ['ChatGPT', 'chatgpt'],
+    ['ChatGPT Plus', 'chatgpt'],
+    ['Claude', 'claude'],
+    ['Claude Pro', 'claude'],
+    ['Gemini', 'googlegemini'],
+    ['Gemini Advanced', 'googlegemini'],
+    ['Google Workspace', 'google'],
+    ['Office supplies', null],
     ['', null],
     ['Hydro', null],
   ])('%s -> %s', (name, slug) => {
@@ -58,6 +124,11 @@ describe('brand marks', () => {
       const t = brandTile(b);
       expect(contrast(t.fg, t.bg)).toBeGreaterThanOrEqual(3);
     }
+  });
+
+  it.each(BRANDS.filter((b) => !b.path).map((b) => [b.title, b] as const))('%s monogram text passes AA 4.5:1', (_t, b) => {
+    const t = brandTile(b);
+    expect(contrast(t.fg, t.bg)).toBeGreaterThanOrEqual(4.5);
   });
 
   it('picks the better ink', () => {
@@ -144,5 +215,78 @@ describe('spend donut', () => {
   ] as const)('%s chart colours are 3:1 on the card and distinct', (mode, surface) => {
     for (const c of CHART_COLORS[mode]) expect(contrast(c, surface)).toBeGreaterThanOrEqual(3);
     expect(new Set(CHART_COLORS[mode]).size).toBe(CHART_COLORS[mode].length);
+  });
+});
+
+describe('generic icons', () => {
+  it('has about two dozen icons with unique keys and symbols', () => {
+    expect(GENERIC_ICONS.length).toBeGreaterThanOrEqual(24);
+    expect(new Set(GENERIC_ICONS.map((i) => i.key)).size).toBe(GENERIC_ICONS.length);
+    expect(new Set(GENERIC_ICONS.map((i) => i.symbol)).size).toBe(GENERIC_ICONS.length);
+    for (const i of GENERIC_ICONS) {
+      expect(i.key).toMatch(/^[a-z]+$/);
+      expect(ICON_COLOR_NAMES).toContain(i.color);
+    }
+  });
+
+  it.each(ICON_COLOR_NAMES)('white icons on %s pass AA 4.5:1 in both modes', (c) => {
+    expect(contrast('#FFFFFF', ICON_COLORS[c])).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
+describe('resolveLogo', () => {
+  it('is Automatic by default: brand by name, else a letter', () => {
+    expect(resolveLogo('Netflix', null)).toMatchObject({ kind: 'mark', label: 'Netflix', bg: '#E50914' });
+    expect(resolveLogo('Rogers', undefined)).toMatchObject({ kind: 'monogram', text: 'R', bg: '#DA291C' });
+    expect(resolveLogo('Book club', '')).toMatchObject({ kind: 'letter', text: 'B' });
+    expect(resolveLogo('Netflix', null)).toEqual(autoLogoTile('Netflix'));
+  });
+
+  it('uses a picked brand or icon over the name', () => {
+    expect(resolveLogo('Phone', 'brand:rogers')).toMatchObject({ kind: 'monogram', label: 'Rogers' });
+    expect(resolveLogo('Netflix', 'icon:tv')).toMatchObject({ kind: 'icon', label: 'TV', color: 'graphite' });
+    expect(resolveLogo('Hydro', 'icon:bolt:teal')).toMatchObject({ kind: 'icon', bg: ICON_COLORS.teal, fg: '#FFFFFF' });
+  });
+
+  it('falls back to Automatic for values it no longer knows', () => {
+    expect(resolveLogo('Netflix', 'brand:gone')).toEqual(autoLogoTile('Netflix'));
+    expect(resolveLogo('Netflix', 'icon:nope')).toEqual(autoLogoTile('Netflix'));
+    expect(resolveLogo('Netflix', 'nonsense')).toEqual(autoLogoTile('Netflix'));
+  });
+
+  it('labels the edit row', () => {
+    expect(logoSummary('Netflix', null)).toBe('Automatic: Netflix');
+    expect(logoSummary('Zzz', null)).toBe('Automatic: first letter');
+    expect(logoSummary('Zzz', 'brand:sonnet')).toBe('Sonnet');
+    expect(logoSummary('Zzz', 'brand:gone')).toBe('Automatic: first letter');
+    expect(logoSummary('Hydro', 'icon:bolt')).toBe(`${GENERIC_ICONS.find((i) => i.key === 'bolt')!.title} icon`);
+  });
+
+  it('sizes monogram text down for longer initials', () => {
+    expect(monogramFontSize('R', 40)).toBeGreaterThan(monogramFontSize('CW', 40));
+    expect(monogramFontSize('CW', 40)).toBeGreaterThan(monogramFontSize('TTC', 40));
+  });
+
+  it('builds monogram tiles from the brand colour', () => {
+    const wonderland = BRANDS.find((b) => b.slug === 'wonderland')!;
+    expect(brandLogoTile(wonderland)).toMatchObject({ kind: 'monogram', text: 'CW', label: 'Canada\'s Wonderland' });
+  });
+});
+
+describe('searchLogos', () => {
+  it('lists everything for a blank search, brands by name', () => {
+    const all = searchLogos('  ');
+    expect(all.brands).toHaveLength(BRANDS.length);
+    expect(all.icons).toHaveLength(GENERIC_ICONS.length);
+    const titles = all.brands.map((b) => b.title);
+    expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b)));
+  });
+
+  it('finds brands by alias and icons by keyword', () => {
+    expect(searchLogos('rogers').brands.map((b) => b.slug)).toContain('rogers');
+    expect(searchLogos('supergrok').brands.map((b) => b.slug)).toEqual(['grok']);
+    expect(searchLogos('office 365').brands.map((b) => b.slug)).toEqual(['microsoft365']);
+    expect(searchLogos('electric').icons.map((i) => i.key)).toContain('bolt');
+    expect(searchLogos('zzzz')).toEqual({ brands: [], icons: [] });
   });
 });

@@ -6,7 +6,9 @@ import type { SFSymbol } from 'expo-symbols';
 
 import type { CategoryTotal } from '../domain/totals';
 import { UNCATEGORIZED_ID } from '../domain/types';
+import { parseLogo } from '../domain/logo';
 import { BRANDS, type Brand } from './brands/data';
+import { GENERIC_ICONS, ICON_COLORS, type GenericIcon, type IconColor } from './brands/icons';
 import { contrast } from './palette';
 
 export type { SFSymbol };
@@ -51,7 +53,7 @@ export function brandTile(brand: Brand): { bg: string; fg: string } {
 }
 
 /** Letter tile backgrounds; white text on each passes 4.5:1 (look.test.ts). */
-export const LETTER_COLORS = ['#B3261E', '#8A4B00', '#2E7D32', '#00695C', '#1565C0', '#4527A0', '#6A1B9A', '#AD1457', '#37474F', '#5D4037'];
+export const LETTER_COLORS: string[] = Object.values(ICON_COLORS);
 
 /** First letter or digit of the name, and a colour picked from the name so it stays the same. */
 export function letterTile(name: string): { letter: string; bg: string; fg: string } {
@@ -141,4 +143,82 @@ export function filterOptions(categories: { id: string; name: string }[], hasUnc
     ...sorted.map((c) => ({ id: c.id, name: c.name, symbol: categorySymbol(c.id, c.name) })),
     ...(hasUncategorized ? [{ id: UNCATEGORIZED_ID, name: 'Uncategorized', symbol: categorySymbol(UNCATEGORIZED_ID, '') }] : []),
   ];
+}
+
+/** What a logo tile draws. Every kind is a rounded square with a colour and an ink. */
+export type LogoTile =
+  | { kind: 'mark'; brand: Brand; path: string; bg: string; fg: string; label: string }
+  | { kind: 'monogram'; brand: Brand; text: string; bg: string; fg: string; label: string }
+  | { kind: 'icon'; icon: GenericIcon; color: IconColor; bg: string; fg: string; label: string }
+  | { kind: 'letter'; text: string; bg: string; fg: string; label: string };
+
+export function brandLogoTile(brand: Brand): LogoTile {
+  const { bg, fg } = brandTile(brand);
+  return brand.path
+    ? { kind: 'mark', brand, path: brand.path, bg, fg, label: brand.title }
+    : { kind: 'monogram', brand, text: brand.monogram ?? brand.title.slice(0, 1), bg, fg, label: brand.title };
+}
+
+export function iconLogoTile(icon: GenericIcon, color: IconColor | null = null): LogoTile {
+  const c = color ?? icon.color;
+  return { kind: 'icon', icon, color: c, bg: ICON_COLORS[c], fg: '#FFFFFF', label: icon.title };
+}
+
+/** The automatic tile: a brand matched by name, else a coloured first letter. */
+export function autoLogoTile(name: string): LogoTile {
+  const brand = matchBrand(name);
+  if (brand) return brandLogoTile(brand);
+  const t = letterTile(name);
+  return { kind: 'letter', text: t.letter, bg: t.bg, fg: t.fg, label: 'Letter' };
+}
+
+/**
+ * The tile for an item: its picked logo (`brand:…` / `icon:…`), or Automatic when none is picked
+ * or the stored value no longer names something the app has.
+ */
+export function resolveLogo(name: string, logo: string | null | undefined): LogoTile {
+  const r = parseLogo(logo);
+  if ('ref' in r && r.ref) {
+    const ref = r.ref;
+    if (ref.kind === 'brand') {
+      const brand = BRANDS.find((b) => b.slug === ref.slug);
+      if (brand) return brandLogoTile(brand);
+    } else {
+      const icon = GENERIC_ICONS.find((i) => i.key === ref.key);
+      if (icon) return iconLogoTile(icon, ref.color);
+    }
+  }
+  return autoLogoTile(name);
+}
+
+/** Font size for monogram initials, smaller for longer ones. */
+export function monogramFontSize(text: string, size: number): number {
+  const n = [...text].length;
+  return size * (n <= 1 ? 0.46 : n === 2 ? 0.38 : 0.28);
+}
+
+/** Picker search: brands by title or alias, icons by title, key or keyword. Blank returns all. */
+export function searchLogos(query: string): { brands: Brand[]; icons: GenericIcon[] } {
+  const q = normalizeName(query);
+  const byTitle = (a: { title: string }, b: { title: string }) => a.title.localeCompare(b.title);
+  if (!q) return { brands: [...BRANDS].sort(byTitle), icons: GENERIC_ICONS };
+  const hit = (words: string[]) => words.some((w) => normalizeName(w).includes(q));
+  return {
+    brands: BRANDS.filter((b) => hit([b.title, b.slug, ...b.aliases])).sort(byTitle),
+    icons: GENERIC_ICONS.filter((i) => hit([i.title, i.key, ...i.keywords])),
+  };
+}
+
+/** What the edit screen's Logo row says: "Automatic: Netflix", "Rogers", "Electricity icon". */
+export function logoSummary(name: string, logo: string | null | undefined): string {
+  const r = parseLogo(logo);
+  const tile = resolveLogo(name, logo);
+  const ref = 'ref' in r ? r.ref : null;
+  const picked =
+    !!ref &&
+    (ref.kind === 'icon'
+      ? tile.kind === 'icon'
+      : (tile.kind === 'mark' || tile.kind === 'monogram') && tile.brand.slug === ref.slug);
+  const what = tile.kind === 'letter' ? 'first letter' : tile.kind === 'icon' ? `${tile.label} icon` : tile.label;
+  return picked ? what : `Automatic: ${what}`;
 }
