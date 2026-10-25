@@ -1,11 +1,14 @@
 /** What a Home row says. Pure, so it is tested in rows.test.ts. */
-import { describeCycle, shortDate } from '../domain/dates';
+import { daysBetween, describeCycle, shortDate } from '../domain/dates';
 import { formatMoney } from '../domain/money';
+import { undoablePayment } from '../domain/payments';
 import {
   chargesBetween,
   describeTrialLeft,
   expectedAmount,
+  hasPromo,
   isVariable,
+  priceOn,
   pastCharges,
   planStatus,
   trialDaysLeft,
@@ -23,15 +26,32 @@ export interface RowModel {
   accessibilityLabel: string;
 }
 
-/** "CA$85.00" or, for a variable bill, "about CA$85.00" (the current estimate). */
-export function amountLabel(s: Subscription): string {
-  const money = formatMoney(expectedAmount(s), s.currency);
+/**
+ * "CA$85.00" or, for a variable bill, "about CA$85.00" (the current estimate). With a charge date,
+ * the price on that date (the regular price once a promo has ended).
+ */
+export function amountLabel(s: Subscription, date?: LocalDate): string {
+  const money = formatMoney(date ? priceOn(s, date) : expectedAmount(s), s.currency);
   return isVariable(s) ? `about ${money}` : money;
+}
+
+/** " · promo until Mar 15, then CA$75.00 · cancel by Nov 28 · Nov 5 paid" (each only when it applies). */
+export function rowNotes(s: Subscription, today: LocalDate): string {
+  const parts: string[] = [];
+  if (hasPromo(s) && today < s.promoEndDate!) {
+    parts.push(`promo until ${shortDate(s.promoEndDate!, today)}, then ${formatMoney(s.regularAmount!, s.currency)}`);
+  }
+  if (s.cancelByDate && s.cancelByDate >= today) {
+    parts.push(s.cancelByDate === today ? 'cancel by today' : `cancel by ${shortDate(s.cancelByDate, today)}`);
+  }
+  const paid = undoablePayment(s, today);
+  if (paid) parts.push(`${paid.date === today ? 'today’s' : shortDate(paid.date, today)} paid`);
+  return parts.map((x) => ` · ${x}`).join('');
 }
 
 export function upcomingRow(s: Subscription, next: LocalDate, today: LocalDate): RowModel {
   const when = next === today ? 'Today' : shortDate(next, today);
-  const off = s.remindersEnabled ? '' : ' · reminder off';
+  const off = `${rowNotes(s, today)}${s.remindersEnabled ? '' : ' · reminder off'}`;
   const trialLeft = trialDaysLeft(s, today);
   let model: Omit<RowModel, 'accessibilityLabel'>;
   if (trialLeft !== null) {
@@ -39,7 +59,7 @@ export function upcomingRow(s: Subscription, next: LocalDate, today: LocalDate):
       title: s.name,
       subtitle: `Trial ${describeTrialLeft(trialLeft)} · then ${amountLabel(s)} ${describeCycle(s.cycle).toLowerCase()}${off}`,
       badge: { label: 'Trial', tone: 'trial' },
-      right: trialLeft > 0 ? 'Free' : amountLabel(s),
+      right: trialLeft > 0 ? 'Free' : amountLabel(s, next),
     };
   } else {
     const plan = planStatus(s, today);
@@ -54,8 +74,8 @@ export function upcomingRow(s: Subscription, next: LocalDate, today: LocalDate):
       model = {
         title: s.name,
         subtitle: `${when} · ${describeCycle(s.cycle)}${isVariable(s) ? ' · varies' : ''}${off}`,
-        ...(isVariable(s) ? { badge: { label: 'Varies', tone: 'neutral' as const } } : {}),
-        right: amountLabel(s),
+        ...(isVariable(s) ? { badge: { label: 'Varies', tone: 'neutral' as const } } : hasPromo(s) && today < s.promoEndDate! ? { badge: { label: 'Promo', tone: 'neutral' as const } } : {}),
+        right: amountLabel(s, next),
       };
     }
   }
@@ -105,4 +125,55 @@ export function mergeActuals(
   const all = next.actuals ?? [];
   const keep = all.filter((a) => chargesBetween(draft, a.date, a.date).length > 0);
   return { actuals: keep, dropped: all.filter((a) => !keep.includes(a)).map((a) => a.date) };
+}
+
+export interface DeadlineRow {
+  s: Subscription;
+  kind: 'cancelBy' | 'promoEnd';
+  date: LocalDate;
+  model: RowModel;
+}
+
+const inDays = (days: number) => (days === 0 ? 'today' : days === 1 ? 'tomorrow' : `in ${days} days`);
+
+/** Home's Deadlines section: cancel-by dates and promo ends from today on, soonest first. */
+export function deadlineRows(subs: Subscription[], today: LocalDate): DeadlineRow[] {
+  const out: DeadlineRow[] = [];
+  for (const s of subs) {
+    if (s.cancelled) continue;
+    if (s.cancelByDate && s.cancelByDate >= today) {
+      const days = daysBetween(today, s.cancelByDate);
+      const subtitle = `Cancel by ${shortDate(s.cancelByDate, today)}, ${inDays(days)}${s.remindersEnabled ? '' : ' · reminder off'}`;
+      out.push({
+        s,
+        kind: 'cancelBy',
+        date: s.cancelByDate,
+        model: {
+          title: s.name,
+          subtitle,
+          badge: { label: 'Cancel by', tone: 'trial' },
+          right: shortDate(s.cancelByDate, today),
+          accessibilityLabel: `${s.name}, ${subtitle}`,
+        },
+      });
+    }
+    if (hasPromo(s) && s.promoEndDate! >= today) {
+      const days = daysBetween(today, s.promoEndDate!);
+      const up = s.regularAmount! - s.amount;
+      const subtitle = `Promo ends ${inDays(days)}: ${formatMoney(s.amount, s.currency)} → ${formatMoney(s.regularAmount!, s.currency)} ${describeCycle(s.cycle).toLowerCase()}${up > 0 ? ` (+${formatMoney(up, s.currency)})` : ''}`;
+      out.push({
+        s,
+        kind: 'promoEnd',
+        date: s.promoEndDate!,
+        model: {
+          title: s.name,
+          subtitle,
+          badge: { label: 'Promo', tone: 'neutral' },
+          right: shortDate(s.promoEndDate!, today),
+          accessibilityLabel: `${s.name}, ${subtitle}`,
+        },
+      });
+    }
+  }
+  return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.s.name.localeCompare(b.s.name)));
 }

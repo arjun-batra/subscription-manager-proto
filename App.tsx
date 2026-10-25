@@ -10,7 +10,8 @@ import { CategoriesScreen } from './src/ui/CategoriesScreen';
 import { EditSubscription } from './src/ui/EditSubscription';
 import { HomeScreen } from './src/ui/HomeScreen';
 import { ImportPreview } from './src/ui/ImportPreview';
-import { SettingsScreen } from './src/ui/SettingsScreen';
+import { RestorePreview } from './src/ui/RestorePreview';
+import { SettingsScreen, type RestoreRequest } from './src/ui/SettingsScreen';
 import { StoreProvider, useStore } from './src/ui/store';
 import { usePalette } from './src/ui/theme';
 
@@ -27,6 +28,7 @@ function Shell() {
   const [tab, setTab] = useState<Tab>('home');
   const [editing, setEditing] = useState<Subscription | 'new' | null>(null);
   const [preview, setPreview] = useState<PreviewRow[] | null>(null);
+  const [restore, setRestore] = useState<RestoreRequest | null>(null);
 
   if (!ready) {
     return (
@@ -42,7 +44,7 @@ function Shell() {
       <View style={{ flex: 1 }}>
         {tab === 'home' ? <HomeScreen onAdd={() => setEditing('new')} onEdit={setEditing} /> : null}
         {tab === 'categories' ? <CategoriesScreen /> : null}
-        {tab === 'settings' ? <SettingsScreen onPreview={setPreview} /> : null}
+        {tab === 'settings' ? <SettingsScreen onPreview={setPreview} onRestore={setRestore} /> : null}
       </View>
       <SafeAreaView
         edges={['bottom']}
@@ -87,6 +89,18 @@ function Shell() {
             onDone={() => {
               setPreview(null);
               setTab('home');
+            }}
+          />
+        ) : null}
+      </Modal>
+      <Modal visible={restore !== null} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setRestore(null)}>
+        {restore ? (
+          <RestorePreview
+            backup={restore.backup}
+            migratedFrom={restore.migratedFrom}
+            onDone={(restored) => {
+              setRestore(null);
+              if (restored) setTab('home');
             }}
           />
         ) : null}

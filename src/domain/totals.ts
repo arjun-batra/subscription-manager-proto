@@ -1,6 +1,6 @@
 import { monthBounds, toLocalDate } from './dates';
 import { toHome } from './money';
-import { amountForCharge, chargesBetween, expectedAmount, inTrial, isCompleted, isPlan, planStatus } from './schedule';
+import { amountForCharge, chargesBetween, expectedAmount, hasPromo, inTrial, isCompleted, isPlan, paymentFor, planStatus, priceOn } from './schedule';
 import {
   UNCATEGORIZED_ID,
   UNCATEGORIZED_NAME,
@@ -28,9 +28,12 @@ export function chargesPerMonth(cycle: Cycle): number {
   }
 }
 
-/** Average per month at the expected amount (a variable bill's estimate). */
-export function monthlyEquivalent(sub: Subscription): number {
-  return expectedAmount(sub) * chargesPerMonth(sub.cycle);
+/**
+ * Average per month at the expected amount (a variable bill's estimate). With `on`, at the price
+ * that applies on that day (the regular price once a promo has ended).
+ */
+export function monthlyEquivalent(sub: Subscription, on?: LocalDate): number {
+  return (on ? priceOn(sub, on) : expectedAmount(sub)) * chargesPerMonth(sub.cycle);
 }
 
 /** Every category an item counts in: its known categories, or Uncategorized. */
@@ -72,6 +75,10 @@ export interface TotalsResult {
   planCount: number;
   /** Unfinished plans left out of plansRemaining because their currency has no rate yet (T5). */
   plansMissingRate: Subscription[];
+  /** Active items whose promo price hasn't ended yet. */
+  promoCount: number;
+  /** overall.monthly as it will be once every current promo has ended (regular prices). */
+  monthlyAfterPromos: number;
 }
 
 const active = (subs: Subscription[]) => subs.filter((s) => !s.cancelled);
@@ -100,9 +107,12 @@ export function computeTotals(
   let plansRemaining = 0;
   let planCount = 0;
   const plansMissingRate: Subscription[] = [];
+  let promoCount = 0;
+  let monthlyAfterPromos = 0;
 
   for (const sub of active(subs).filter((s) => !isCompleted(s, today))) {
-    const monthly = toHome(inTrial(sub, today) ? 0 : monthlyEquivalent(sub), sub.currency, settings);
+    // Promos: the price that applies today (the regular price once the promo has ended).
+    const monthly = toHome(inTrial(sub, today) ? 0 : monthlyEquivalent(sub, today), sub.currency, settings);
     if (monthly === null) {
       missingRate.push(sub);
       if (isPlan(sub)) plansMissingRate.push(sub);
@@ -112,6 +122,12 @@ export function computeTotals(
     overall.monthly += monthly;
     overall.yearly += monthly * 12;
     overall.count += 1;
+    if (hasPromo(sub) && today < sub.promoEndDate!) {
+      promoCount += 1;
+      monthlyAfterPromos += toHome(sub.regularAmount! * chargesPerMonth(sub.cycle), sub.currency, settings) ?? 0;
+    } else {
+      monthlyAfterPromos += monthly;
+    }
     const plan = planStatus(sub, today);
     if (plan) {
       plansRemaining += toHome(plan.remainingAmount, sub.currency, settings) ?? 0;
@@ -151,6 +167,8 @@ export function computeTotals(
     plansRemaining,
     planCount,
     plansMissingRate,
+    promoCount,
+    monthlyAfterPromos,
   };
 }
 
@@ -158,15 +176,25 @@ export interface MonthCharge {
   sub: Subscription;
   date: LocalDate;
   homeAmount: number | null;
+  /** Due before today, or marked paid. */
+  paid: boolean;
 }
 
 export interface MonthTotals {
   /** Every charge due this calendar month. */
   thisMonth: number;
-  /** Charges due today or later this month (a charge due today is still due). */
+  /** Charges due today or later this month and not marked paid (a charge due today is still due). */
   stillDue: number;
-  /** thisMonth - stillDue. */
+  /** thisMonth - stillDue: this month's charges already paid (past ones, and ones marked paid). */
   paidSoFar: number;
+  /**
+   * Money paid during this calendar month, by the day it was paid: charges due before today that
+   * weren't marked paid on another day, plus every payment marked this month, including ones paid
+   * early for a later charge. A charge marked last month for this month isn't in here.
+   */
+  paidThisMonth: number;
+  /** First day of this calendar month. */
+  monthStart: LocalDate;
   charges: MonthCharge[];
   /** Subscriptions with a charge this month but no exchange rate. */
   missingRate: Subscription[];
@@ -184,20 +212,35 @@ export function computeMonthTotals(
   const { start, end } = monthBounds(today);
   let thisMonth = 0;
   let stillDue = 0;
+  let paidThisMonth = 0;
   const charges: MonthCharge[] = [];
   const missing = new Map<string, Subscription>();
 
   for (const sub of active(subs)) {
     for (const date of chargesBetween(sub, start, end)) {
-      // Variable bills: the logged actual where there is one, else the estimate.
+      // Variable bills: the logged actual where there is one, else the estimate. Promos: the
+      // regular price from the end date. Marked payments: what was paid.
       const homeAmount = toHome(amountForCharge(sub, date), sub.currency, settings);
-      charges.push({ sub, date, homeAmount });
+      const record = paymentFor(sub, date);
+      const paid = date < today || !!record;
+      charges.push({ sub, date, homeAmount, paid });
       if (homeAmount === null) {
         missing.set(sub.id, sub);
         continue;
       }
       thisMonth += homeAmount;
-      if (date >= today) stillDue += homeAmount;
+      if (!paid) stillDue += homeAmount;
+      // Paid by being due (not marked): counts on its due date.
+      if (date < today && !record) paidThisMonth += homeAmount;
+    }
+  }
+  // Marked payments count on the day they were marked, even for a cancelled item or a later charge.
+  for (const sub of subs) {
+    for (const p of sub.payments ?? []) {
+      if (p.paidOn < start || p.paidOn > end || p.paidOn > today) continue;
+      const home = toHome(amountForCharge(sub, p.date), sub.currency, settings);
+      if (home === null) missing.set(sub.id, sub);
+      else paidThisMonth += home;
     }
   }
   charges.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
@@ -205,6 +248,8 @@ export function computeMonthTotals(
     thisMonth,
     stillDue,
     paidSoFar: Math.max(0, thisMonth - stillDue),
+    paidThisMonth,
+    monthStart: start,
     charges,
     missingRate: [...missing.values()],
   };

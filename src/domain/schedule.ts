@@ -1,5 +1,5 @@
 import { addDays, daysBetween, firstIndexOnOrAfter, nextOnOrAfter, occurrence, occurrencesBetween } from './dates';
-import type { ActualCharge, Cycle, LocalDate, Subscription } from './types';
+import type { ActualCharge, Cycle, LocalDate, PaymentRecord, Subscription } from './types';
 
 /** An instalment plan: a fixed number of payments, then it stops. */
 export function isPlan(sub: Subscription): boolean {
@@ -84,15 +84,17 @@ export function planStatus(sub: Subscription, today: LocalDate): PlanStatus | nu
   if (!isPlan(sub)) return null;
   const total = sub.totalPayments!;
   const lastPayment = planEndDate(sub)!;
-  const next = upcomingCharge(sub, today);
+  // Payments marked paid early count as paid: "N of M" counts up to the next unpaid one.
+  const next = nextDue(sub, today);
   const paid = next === null ? total : Math.max(0, Math.min(total, paymentNumber(sub, next) - 1));
   const remaining = total - paid;
-  return { total, paid, remaining, remainingAmount: remaining * sub.amount, lastPayment, completed: today > lastPayment };
+  return { total, paid, remaining, remainingAmount: remaining * sub.amount, lastPayment, completed: next === null };
 }
 
+/** A plan is completed after its last payment day, or once every payment left is marked paid. */
 export function isCompleted(sub: Subscription, today: LocalDate): boolean {
   const end = planEndDate(sub);
-  return !!end && today > end;
+  return !!end && (today > end || nextDue(sub, today) === null);
 }
 
 /**
@@ -186,13 +188,18 @@ export function expectedAmount(sub: Subscription): number {
   return recent.reduce((acc, a) => acc + a.amount, 0) / recent.length;
 }
 
-/** The amount for one charge: the logged actual for that date if there is one, else the expected amount. */
+/**
+ * The amount for one charge: a variable bill's logged actual for that date, else what was marked
+ * paid for it, else its price on that date (post-promo price after a promo ends, else expected).
+ */
 export function amountForCharge(sub: Subscription, date: LocalDate): number {
   if (isVariable(sub)) {
     const actual = sub.actuals?.find((a) => a.date === date);
     if (actual) return actual.amount;
   }
-  return expectedAmount(sub);
+  const paid = paymentFor(sub, date);
+  if (paid) return paid.amount;
+  return priceOn(sub, date);
 }
 
 /** The most recent `count` charge dates on or before `today`, newest first (none before the first charge). */
@@ -207,6 +214,49 @@ export function pastCharges(sub: Subscription, today: LocalDate, count: number):
     out.push(d);
   }
   return out;
+}
+
+/** True when this item's promo price applies to some charges and a regular price follows it. */
+export function hasPromo(sub: Subscription): boolean {
+  return (
+    !!sub.promoEndDate &&
+    typeof sub.regularAmount === 'number' &&
+    Number.isFinite(sub.regularAmount) &&
+    sub.regularAmount > 0 &&
+    !isPlan(sub) &&
+    !isVariable(sub)
+  );
+}
+
+/**
+ * The price of a charge on `date` before any logged actual: the regular price on or after a promo's
+ * end date, else the expected amount (promo price, fixed price or variable estimate).
+ */
+export function priceOn(sub: Subscription, date: LocalDate): number {
+  if (hasPromo(sub) && date >= sub.promoEndDate!) return sub.regularAmount!;
+  return expectedAmount(sub);
+}
+
+/** The payment marked for the charge on `date`, if any. */
+export function paymentFor(sub: Subscription, date: LocalDate): PaymentRecord | undefined {
+  return sub.payments?.find((p) => p.date === date);
+}
+
+/**
+ * The next charge still to pay: the first charge on or after today that isn't marked paid. A charge
+ * due today counts as due until it's marked. Null once a plan has nothing left to pay.
+ */
+export function nextDue(sub: Subscription, today: LocalDate): LocalDate | null {
+  const end = planEndDate(sub);
+  const paid = new Set((sub.payments ?? []).map((p) => p.date));
+  let k = firstIndexOnOrAfter(sub.anchorDate, sub.cycle, floor(sub, today));
+  // Each marked payment can skip at most one charge, so this loop is bounded by payments + 1.
+  for (let i = 0; i <= paid.size; i += 1, k += 1) {
+    const d = occurrence(sub.anchorDate, sub.cycle, k);
+    if (end && d > end) return null;
+    if (!paid.has(d)) return d;
+  }
+  return null;
 }
 
 /** Returns the subscription with an actual logged for `date` (replacing any earlier one). */

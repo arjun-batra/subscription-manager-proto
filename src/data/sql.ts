@@ -9,6 +9,7 @@ import {
   DEFAULT_SETTINGS,
   type ActualCharge,
   type Category,
+  type PaymentRecord,
   type Settings,
   type Subscription,
   type WeekdayRule,
@@ -28,7 +29,7 @@ export interface SqlDb extends SqlExec {
   withExclusiveTransactionAsync(task: (txn: SqlExec) => Promise<void>): Promise<void>;
 }
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /**
  * Brings the schema up to SCHEMA_VERSION. Each step runs in its own exclusive transaction
@@ -111,6 +112,17 @@ export async function migrate(db: SqlDb): Promise<void> {
       await txn.execAsync('PRAGMA user_version = 5');
     });
   }
+  if (version < 6) {
+    // Marked payments (JSON), promo end + regular price, cancel-by deadline. All nullable, so
+    // existing rows have no payments, no promo and no deadline. Four ALTERs and the bump, one step.
+    await db.withExclusiveTransactionAsync(async (txn) => {
+      await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN payments TEXT');
+      await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN promo_end_date TEXT');
+      await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN regular_amount REAL');
+      await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN cancel_by_date TEXT');
+      await txn.execAsync('PRAGMA user_version = 6');
+    });
+  }
 }
 
 /** Logged actuals are stored as JSON [{date, amount}]; anything unreadable is dropped, never fatal. */
@@ -126,6 +138,35 @@ export function parseActuals(raw: string | null | undefined): ActualCharge[] {
   } catch {
     return [];
   }
+}
+
+const LOCAL_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Marked payments are JSON [{date, paidOn, amount, loggedActual?}]; unreadable entries are dropped. */
+export function parsePayments(raw: string | null | undefined): PaymentRecord[] {
+  if (!raw) return [];
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    const out: PaymentRecord[] = [];
+    for (const p of v) {
+      if (!p || typeof p.date !== 'string' || !LOCAL_DATE.test(p.date)) continue;
+      if (typeof p.paidOn !== 'string' || !LOCAL_DATE.test(p.paidOn)) continue;
+      if (typeof p.amount !== 'number' || !Number.isFinite(p.amount) || p.amount < 0) continue;
+      if (out.some((o) => o.date === p.date)) continue;
+      out.push({ date: p.date, paidOn: p.paidOn, amount: p.amount, ...(p.loggedActual === true ? { loggedActual: true } : {}) });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function serializePayments(list: PaymentRecord[] | undefined): string | null {
+  if (!list?.length) return null;
+  return JSON.stringify(
+    list.map((p) => ({ date: p.date, paidOn: p.paidOn, amount: p.amount, ...(p.loggedActual ? { loggedActual: true } : {}) })),
+  );
 }
 
 function weekdayFromRow(nth: number | null, day: number | null): WeekdayRule | null {
@@ -149,6 +190,10 @@ interface SubRow {
   variable: number | null;
   actuals: string | null;
   logo: string | null;
+  payments: string | null;
+  promo_end_date: string | null;
+  regular_amount: number | null;
+  cancel_by_date: string | null;
   notes: string;
   manage_url: string;
   reminders_enabled: number;
@@ -194,6 +239,10 @@ export async function loadSnapshot(db: SqlExec): Promise<Snapshot> {
       variable: !!r.variable,
       actuals: parseActuals(r.actuals),
       logo: normalizeLogo(r.logo),
+      payments: parsePayments(r.payments),
+      promoEndDate: r.promo_end_date ?? null,
+      regularAmount: r.regular_amount ?? null,
+      cancelByDate: r.cancel_by_date ?? null,
       categoryIds: byId.get(r.id) ?? [],
       notes: r.notes,
       manageUrl: r.manage_url,
@@ -211,13 +260,16 @@ export async function writeSub(db: SqlExec, s: Subscription): Promise<void> {
   await db.runAsync(
     `INSERT INTO subscriptions (id, name, amount, currency, cycle_unit, cycle_every, anchor_date, start_date,
        trial_end_date, total_payments, cycle_weekday_nth, cycle_weekday, variable, actuals, logo,
+       payments, promo_end_date, regular_amount, cancel_by_date,
        notes, manage_url, reminders_enabled, cancelled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET name = excluded.name, amount = excluded.amount, currency = excluded.currency,
        cycle_unit = excluded.cycle_unit, cycle_every = excluded.cycle_every, anchor_date = excluded.anchor_date,
        start_date = excluded.start_date, trial_end_date = excluded.trial_end_date,
        total_payments = excluded.total_payments, cycle_weekday_nth = excluded.cycle_weekday_nth,
-       cycle_weekday = excluded.cycle_weekday, variable = excluded.variable, actuals = excluded.actuals, logo = excluded.logo, notes = excluded.notes, manage_url = excluded.manage_url,
+       cycle_weekday = excluded.cycle_weekday, variable = excluded.variable, actuals = excluded.actuals, logo = excluded.logo,
+       payments = excluded.payments, promo_end_date = excluded.promo_end_date, regular_amount = excluded.regular_amount,
+       cancel_by_date = excluded.cancel_by_date, notes = excluded.notes, manage_url = excluded.manage_url,
        reminders_enabled = excluded.reminders_enabled, cancelled = excluded.cancelled, updated_at = excluded.updated_at`,
     s.id,
     s.name,
@@ -234,6 +286,10 @@ export async function writeSub(db: SqlExec, s: Subscription): Promise<void> {
     s.variable ? 1 : 0,
     s.actuals?.length ? JSON.stringify(s.actuals.map((a) => ({ date: a.date, amount: a.amount }))) : null,
     normalizeLogo(s.logo),
+    serializePayments(s.payments),
+    s.promoEndDate ?? null,
+    s.regularAmount ?? null,
+    s.cancelByDate ?? null,
     s.notes,
     s.manageUrl,
     s.remindersEnabled ? 1 : 0,
@@ -291,6 +347,10 @@ export async function importDraftsInto(
         variable: d.variable,
         actuals: d.actuals,
         logo: d.logo,
+        payments: d.payments,
+        promoEndDate: d.promoEndDate,
+        regularAmount: d.regularAmount,
+        cancelByDate: d.cancelByDate,
         categoryIds,
         notes: d.notes,
         manageUrl: d.manageUrl,
@@ -322,5 +382,34 @@ export async function saveCategoryIn(db: SqlDb, c: { id: string; name: string })
       c.id,
       name,
     );
+  });
+}
+
+/** Writes every setting as a key/JSON row (the same format saveSettings uses). */
+export async function writeSettings(db: SqlExec, settings: Settings): Promise<void> {
+  for (const [key, value] of Object.entries(settings)) {
+    await db.runAsync(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      key,
+      JSON.stringify(value),
+    );
+  }
+}
+
+/**
+ * Restore from a backup: replaces every item, category, link and setting in one exclusive
+ * transaction. Any failure rolls back to exactly what was there before, and is re-thrown.
+ */
+export async function replaceAllIn(db: SqlDb, snap: Snapshot): Promise<void> {
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    await txn.runAsync('DELETE FROM subscription_categories');
+    await txn.runAsync('DELETE FROM subscriptions');
+    await txn.runAsync('DELETE FROM categories');
+    await txn.runAsync('DELETE FROM settings');
+    for (const c of snap.categories) {
+      await txn.runAsync('INSERT INTO categories (id, name) VALUES (?, ?)', c.id, c.name);
+    }
+    for (const sub of snap.subscriptions) await writeSub(txn, sub);
+    await writeSettings(txn, snap.settings);
   });
 }

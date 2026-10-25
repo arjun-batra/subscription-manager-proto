@@ -24,6 +24,7 @@ import {
   lastPaymentDate,
   MAX_PLAN_PAYMENTS,
   nextCharge,
+  nextDue,
   pastCharges,
   planEndDate,
   planFromInputs,
@@ -37,7 +38,8 @@ import { Button, Card, Chip, Field, Row, SectionHeader } from './components';
 import { logoSummary } from './look';
 import { LogoPicker } from './LogoPicker';
 import { MenuPicker, Segmented } from './native';
-import { mergeActuals } from './rows';
+import { keepPayments } from '../domain/payments';
+import { mergeActuals, parseAmount } from './rows';
 import { useStore } from './store';
 import { usePalette } from './theme';
 
@@ -97,7 +99,15 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
   const [cycle, setCycle] = useState<Cycle>(existing?.cycle ?? { unit: 'month', every: 1 });
   const [custom, setCustom] = useState(existing ? !CYCLES.slice(0, 4).some((c) => sameLength(c.cycle, existing.cycle)) : false);
   // Show the next upcoming charge, not the stored anchor (which can be months back).
-  const [initialDate] = useState(() => (existing ? nextCharge(existing, store.today) : store.today));
+  // A charge marked paid early is skipped (the next unpaid one shows), except during a trial,
+  // where this date is the trial end.
+  const [initialDate] = useState(() =>
+    existing
+      ? trialDaysLeft(existing, store.today) === null
+        ? (nextDue(existing, store.today) ?? nextCharge(existing, store.today))
+        : nextCharge(existing, store.today)
+      : store.today,
+  );
   const [date, setDate] = useState(initialDate);
   const [firstCharge, setFirstCharge] = useState(!!existing?.startDate);
   const [categoryIds, setCategoryIds] = useState<string[]>(existing?.categoryIds ?? []);
@@ -116,6 +126,11 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
   const [variable, setVariable] = useState(existing?.variable ?? false);
   const [logo, setLogo] = useState<string | null>(existing?.logo ?? null);
   const [pickingLogo, setPickingLogo] = useState(false);
+  const [promo, setPromo] = useState(!!existing?.promoEndDate && !!existing?.regularAmount);
+  const [promoEnd, setPromoEnd] = useState(existing?.promoEndDate ?? store.today);
+  const [regular, setRegular] = useState(existing?.regularAmount ? String(existing.regularAmount) : '');
+  const [cancelByOn, setCancelByOn] = useState(!!existing?.cancelByDate);
+  const [cancelBy, setCancelBy] = useState(existing?.cancelByDate ?? initialDate);
   /** Amounts typed for past charges, by date ('' clears one). Only edited dates are here. */
   const [typedActuals, setTypedActuals] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -171,6 +186,13 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
       }
     }
     const isVariableBill = kind === 'subscription' && variable;
+    const promoApplies = promo && kind === 'subscription' && !isVariableBill;
+    const regularNum = parseAmount(regular);
+    if (promoApplies) {
+      if (!isValidLocalDate(promoEnd)) e.promoEnd = 'Pick the day the regular price starts.';
+      if (regularNum === null) e.regular = 'Enter the regular price, more than 0.';
+    }
+    if (cancelByOn && !isValidLocalDate(cancelBy)) e.cancelBy = 'Pick the date to cancel by.';
     if (Object.keys(e).length) {
       setErrors(e);
       return;
@@ -204,6 +226,10 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
       variable: isVariableBill,
       actuals: isVariableBill ? (existing?.actuals ?? []) : [],
       logo,
+      payments: existing?.payments ?? [],
+      promoEndDate: promoApplies ? promoEnd : null,
+      regularAmount: promoApplies ? regularNum : null,
+      cancelByDate: cancelByOn ? cancelBy : null,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
@@ -215,6 +241,8 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
       }
       draft.actuals = merged.actuals;
     }
+    // Paid marks stay only on dates that are still charge dates of the edited schedule.
+    draft.payments = keepPayments(draft).payments;
     setErrors({});
     setSaving(true);
     try {
@@ -574,6 +602,61 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
             </Card>
           </>
         ) : null}
+
+        <SectionHeader>Deals and deadlines</SectionHeader>
+        <Card>
+          {kind === 'subscription' && !variableForm ? (
+            <>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, paddingBottom: promo ? 0 : 16 }}>
+                <View style={{ flex: 1, paddingRight: 12 }}>
+                  <Text style={{ color: p.text, fontSize: 17 }}>Promo price ends</Text>
+                  <Text style={{ color: p.secondaryText, fontSize: 14 }}>
+                    The amount above is the promo price. Reminders a week and a day before it goes up.
+                  </Text>
+                </View>
+                <Switch value={promo} onValueChange={setPromo} accessibilityLabel="Promo price ends" />
+              </View>
+              {promo ? (
+                <>
+                  <DateRow label="Regular price from" value={promoEnd} onChange={setPromoEnd} />
+                  {errors.promoEnd ? <Text style={{ color: p.danger, paddingHorizontal: 16, paddingBottom: 8 }}>{errors.promoEnd}</Text> : null}
+                  <Field
+                    label={`Regular price (${currency || 'currency'})`}
+                    value={regular}
+                    onChangeText={setRegular}
+                    keyboardType="decimal-pad"
+                    placeholder="75.00"
+                    error={errors.regular}
+                  />
+                  <Text style={{ color: p.secondaryText, fontSize: 14, paddingHorizontal: 16, paddingBottom: 12 }}>
+                    Charges on or after {isValidLocalDate(promoEnd) ? shortDate(promoEnd, store.today) : 'that day'} are counted at the
+                    regular price in totals and reminders.
+                  </Text>
+                </>
+              ) : null}
+            </>
+          ) : null}
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, paddingBottom: cancelByOn ? 0 : 16 }}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={{ color: p.text, fontSize: 17 }}>Cancel by</Text>
+              <Text style={{ color: p.secondaryText, fontSize: 14 }}>
+                A deadline to cancel, like a trial’s or a contract’s notice date. Reminders 3 days and 1 day before.
+              </Text>
+            </View>
+            <Switch value={cancelByOn} onValueChange={setCancelByOn} accessibilityLabel="Cancel by" />
+          </View>
+          {cancelByOn ? (
+            <>
+              <DateRow label="Cancel by" value={cancelBy} onChange={setCancelBy} />
+              {errors.cancelBy ? <Text style={{ color: p.danger, paddingHorizontal: 16, paddingBottom: 8 }}>{errors.cancelBy}</Text> : null}
+              {isTrialForm ? (
+                <Text style={{ color: p.secondaryText, fontSize: 14, paddingHorizontal: 16, paddingBottom: 12 }}>
+                  These reminders replace the usual trial-end ones.
+                </Text>
+              ) : null}
+            </>
+          ) : null}
+        </Card>
 
         <SectionHeader>Categories</SectionHeader>
         <Card>

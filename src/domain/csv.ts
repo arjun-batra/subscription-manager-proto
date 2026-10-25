@@ -1,8 +1,8 @@
 import { formatLogo, normalizeLogo, parseLogo } from './logo';
-import { describeCycle, describeWeekdayRule, isValidCycle, isValidLocalDate, nextOnOrAfter, parseWeekdayRule } from './dates';
+import { describeCycle, describeWeekdayRule, isValidCycle, isValidLocalDate, nextOnOrAfter, parseWeekdayRule, toLocalDate } from './dates';
 import { isValidCurrency } from './money';
 import { MAX_PLAN_PAYMENTS } from './schedule';
-import type { ActualCharge, Category, Cycle, LocalDate, Subscription } from './types';
+import type { ActualCharge, Category, Cycle, LocalDate, PaymentRecord, Subscription } from './types';
 
 /** RFC 4180-style parser: quoted fields, "" escapes, CRLF/LF, optional BOM. */
 export function parseCsv(text: string): string[][] {
@@ -59,6 +59,10 @@ const HEADER_ALIASES: Record<string, string[]> = {
   varies: ['varies', 'variable'],
   actuals: ['actuals', 'actual amounts'],
   logo: ['logo', 'icon'],
+  promoEnds: ['promo ends', 'promo end date', 'promo end', 'promo price ends'],
+  regular: ['regular price', 'price after promo', 'regular amount'],
+  cancelBy: ['cancel by', 'cancel by date', 'cancellation deadline'],
+  paid: ['paid', 'marked paid', 'paid charges'],
 };
 const REQUIRED = ['name', 'amount', 'currency', 'cycle', 'next'] as const;
 const LABEL: Record<string, string> = {
@@ -86,6 +90,10 @@ export const CSV_COLUMNS = [
   'varies',
   'actuals',
   'logo',
+  'promo ends',
+  'regular price',
+  'cancel by',
+  'paid',
 ];
 
 const FORMULA_START = /^[=+\-@\t\r]/;
@@ -158,6 +166,35 @@ export interface ImportDraft {
   actuals: ActualCharge[];
   /** Picked logo (`brand:…` / `icon:…`), or null for Automatic. */
   logo: string | null;
+  /** Promo price (`amount`) ends on this date; charges from then on are `regularAmount`. */
+  promoEndDate: LocalDate | null;
+  regularAmount: number | null;
+  /** Deadline to cancel by. */
+  cancelByDate: LocalDate | null;
+  /** Charges marked paid. */
+  payments: PaymentRecord[];
+}
+
+/** Paid cell: "2026-11-05@2026-11-01=16.49; …" (charge date @ day paid = amount, ; separated). */
+export function formatPayments(payments: PaymentRecord[] | undefined): string {
+  return [...(payments ?? [])]
+    .sort((a, b) => (a.date < b.date ? -1 : 1))
+    .map((p) => `${p.date}@${p.paidOn}=${p.amount}`)
+    .join('; ');
+}
+
+/** Parses the paid cell, or returns an error message. */
+export function parsePaymentsCell(raw: string): { payments: PaymentRecord[] } | { error: string } {
+  const out: PaymentRecord[] = [];
+  for (const part of raw.split(';').map((p) => p.trim()).filter(Boolean)) {
+    const m = /^(\d{4}-\d{2}-\d{2})\s*@\s*(\d{4}-\d{2}-\d{2})\s*=\s*(\d+(?:\.\d+)?)$/.exec(part);
+    if (!m || !isValidLocalDate(m[1]) || !isValidLocalDate(m[2])) {
+      return { error: `paid must look like 2026-11-05@2026-11-01=16.49 (charge date@day paid=amount); “${part}” doesn’t` };
+    }
+    if (out.some((p) => p.date === m[1])) return { error: `paid lists ${m[1]} twice` };
+    out.push({ date: m[1], paidOn: m[2], amount: Number(m[3]) });
+  }
+  return { payments: out };
 }
 
 /** Compact actuals cell: "2026-09-01=84.12; 2026-10-01=91.3" (date=amount pairs, ; separated). */
@@ -199,8 +236,11 @@ export function duplicateKey(name: string, amount: number, cycle: Cycle): string
   return `${name.trim().toLowerCase().replace(/\s+/g, ' ')}|${amount.toFixed(2)}|${cycle.unit}:${cycle.every}`;
 }
 
-/** Parses a CSV into a preview. Nothing is written here. */
-export function previewImport(text: string, existing: Subscription[]): ImportPreview {
+/**
+ * Parses a CSV into a preview. Nothing is written here. `today` (the local day) rejects actuals
+ * and payments dated in the future.
+ */
+export function previewImport(text: string, existing: Subscription[], today: LocalDate = toLocalDate(new Date())): ImportPreview {
   const rows = parseCsv(text);
   if (!rows.length) return { ok: false, error: 'The file is empty.' };
   const header = rows[0].map((h) => h.trim().toLowerCase().replace(/\s+/g, ' '));
@@ -277,6 +317,28 @@ export function previewImport(text: string, existing: Subscription[]): ImportPre
       if (actuals.length && !variable) problems.push('actuals need varies set to yes');
       const off = actuals.find((a) => cycle && isValidLocalDate(anchorDate) && !onSchedule(a.date));
       if (off) problems.push(`actual for ${off.date} isn't a charge date`);
+      const future = actuals.find((a) => a.date > today);
+      if (future) problems.push(`actual for ${future.date} is in the future; log it after the charge`);
+    }
+    const promoEnds = get(r, 'promoEnds');
+    const regularRaw = get(r, 'regular').replace(/[^\d.,-]/g, '').replace(/,(?=\d{3}\b)/g, '').replace(',', '.');
+    const regularAmount = regularRaw ? Number(regularRaw) : null;
+    if (promoEnds && !isValidLocalDate(promoEnds)) problems.push('promo ends must be YYYY-MM-DD');
+    if (regularRaw && (!Number.isFinite(regularAmount) || regularAmount! <= 0)) problems.push('regular price must be more than 0');
+    if (!!promoEnds !== !!regularRaw) problems.push('promo ends and regular price go together');
+    if (promoEnds && paymentsRaw) problems.push("a payment plan can't have a promo price");
+    if (promoEnds && variable) problems.push("a bill that varies can't have a promo price");
+    const cancelBy = get(r, 'cancelBy');
+    if (cancelBy && !isValidLocalDate(cancelBy)) problems.push('cancel by must be YYYY-MM-DD');
+    const paidCell = parsePaymentsCell(get(r, 'paid'));
+    let payments: PaymentRecord[] = [];
+    if ('error' in paidCell) problems.push(paidCell.error);
+    else {
+      payments = paidCell.payments;
+      const off = payments.find((p) => cycle && isValidLocalDate(anchorDate) && !onSchedule(p.date));
+      if (off) problems.push(`paid charge ${off.date} isn't a charge date`);
+      const future = payments.find((p) => p.paidOn > today);
+      if (future) problems.push(`paid on ${future.paidOn} is in the future`);
     }
     const logoCell = parseLogo(get(r, 'logo'));
     if ('error' in logoCell) problems.push(logoCell.error);
@@ -303,6 +365,10 @@ export function previewImport(text: string, existing: Subscription[]): ImportPre
       variable,
       actuals,
       logo: 'ref' in logoCell ? formatLogo(logoCell.ref) || null : null,
+      promoEndDate: promoEnds || null,
+      regularAmount: promoEnds ? regularAmount : null,
+      cancelByDate: cancelBy || null,
+      payments,
     };
     const key = duplicateKey(name, amount, cycle);
     if (seen.has(key)) {
@@ -360,6 +426,10 @@ export function toCsv(subs: Subscription[], categories: Category[]): string {
         s.variable ? 'yes' : '',
         s.variable ? formatActuals(s.actuals) : '',
         normalizeLogo(s.logo) ?? '',
+        s.promoEndDate && s.regularAmount ? s.promoEndDate : '',
+        s.promoEndDate && s.regularAmount ? String(s.regularAmount) : '',
+        s.cancelByDate ?? '',
+        formatPayments(s.payments),
       ]
         .map(esc)
         .join(','),
@@ -370,8 +440,9 @@ export function toCsv(subs: Subscription[], categories: Category[]): string {
 
 export const CSV_TEMPLATE =
   CSV_COLUMNS.join(',') +
-  '\r\nNetflix,16.49,CAD,monthly,2026-11-05,Streaming,Family plan,https://www.netflix.com/account,active,on,,,,,,\r\n' +
-  'Phone,45,CAD,monthly,2026-11-10,Phone,Paying off the phone,,active,on,2026-03-10,,24,,,icon:phone\r\n' +
-  'Trial app,9.99,CAD,monthly,2026-12-01,,Free trial,,active,on,,2026-12-01,,,,\r\n' +
-  'Hydro,85,CAD,every 2 months,2026-11-20,Utilities,Estimate,,active,on,,,,yes,2026-07-20=81.4; 2026-09-20=92.15,icon:bolt:amber\r\n' +
-  'Book club,12,CAD,monthly on the 2nd tue,2026-11-10,,2nd Tuesday,,active,on,,,,,,icon:book\r\n';
+  '\r\nNetflix,16.49,CAD,monthly,2026-11-05,Streaming,Family plan,https://www.netflix.com/account,active,on,,,,,,,,,,\r\n' +
+  'Phone,45,CAD,monthly,2026-11-10,Phone,Paying off the phone,,active,on,2026-03-10,,24,,,icon:phone,,,,\r\n' +
+  'Trial app,9.99,CAD,monthly,2026-12-01,,Free trial,,active,on,,2026-12-01,,,,,,,2026-11-28,\r\n' +
+  'Hydro,85,CAD,every 2 months,2026-11-20,Utilities,Estimate,,active,on,,,,yes,2026-07-20=81.4; 2026-09-20=92.15,icon:bolt:amber,,,,\r\n' +
+  'Book club,12,CAD,monthly on the 2nd tue,2026-11-10,,2nd Tuesday,,active,on,,,,,,icon:book,,,,\r\n' +
+  'Rogers,55,CAD,monthly,2026-11-15,Phone,First 12 months price,,active,on,,,,,,,2027-03-15,75,,\r\n';

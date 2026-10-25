@@ -2,7 +2,7 @@ import * as SQLite from 'expo-sqlite';
 
 import type { ImportDraft } from '../domain/csv';
 import type { Category, Settings, Subscription } from '../domain/types';
-import { importDraftsInto, loadSnapshot, migrate, saveCategoryIn, writeSub, type Snapshot, type SqlDb } from './sql';
+import { importDraftsInto, loadSnapshot, migrate, replaceAllIn, saveCategoryIn, writeSettings, writeSub, type Snapshot, type SqlDb } from './sql';
 
 export type { Snapshot } from './sql';
 
@@ -65,18 +65,16 @@ export async function deleteCategory(id: string): Promise<void> {
 
 export async function saveSettings(s: Settings): Promise<void> {
   const db = await sqlDb();
-  await db.withExclusiveTransactionAsync(async (txn) => {
-    for (const [key, value] of Object.entries(s)) {
-      await txn.runAsync(
-        'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-        key,
-        JSON.stringify(value),
-      );
-    }
-  });
+  await db.withExclusiveTransactionAsync((txn) => writeSettings(txn, s));
 }
 
 /** All-or-nothing import (see importDraftsInto). */
 export async function importDrafts(drafts: ImportDraft[]): Promise<number> {
   return importDraftsInto(await sqlDb(), drafts, newId);
+}
+
+/** Restore from a backup: replaces everything, all-or-nothing (see replaceAllIn). */
+export async function restoreAll(snap: Snapshot): Promise<number> {
+  await replaceAllIn(await sqlDb(), snap);
+  return snap.subscriptions.length;
 }

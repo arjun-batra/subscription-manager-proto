@@ -4,7 +4,10 @@ import * as Sharing from 'expo-sharing';
 import { useState } from 'react';
 import { Alert, ScrollView, Text, TextInput, View } from 'react-native';
 
+import { backupFileName, backupJson, makeBackup, parseBackup, type ParsedBackup } from '../domain/backup';
 import { CSV_TEMPLATE, previewImport, toCsv, type PreviewRow } from '../domain/csv';
+import { toLocalDate } from '../domain/dates';
+import { SCHEMA_VERSION } from '../data/sql';
 import { changeHomeCurrency, isValidCurrency } from '../domain/money';
 import { cycleShorterThanLead } from '../domain/schedule';
 import { sendTestNotification, requestPermission } from '../services/notifications';
@@ -12,15 +15,17 @@ import { Card, Chip, Field, Row, SectionHeader } from './components';
 import { useStore } from './store';
 import { usePalette } from './theme';
 
-async function shareText(filename: string, text: string) {
+async function shareText(filename: string, text: string, type: { mimeType: string; UTI: string } = { mimeType: 'text/csv', UTI: 'public.comma-separated-values-text' }) {
   const file = new File(Paths.cache, filename);
   if (file.exists) file.delete();
   file.create();
   await file.write(text);
-  await Sharing.shareAsync(file.uri, { mimeType: 'text/csv', UTI: 'public.comma-separated-values-text' });
+  await Sharing.shareAsync(file.uri, { ...type, dialogTitle: filename });
 }
 
-export function SettingsScreen({ onPreview }: { onPreview: (rows: PreviewRow[]) => void }) {
+export type RestoreRequest = Extract<ParsedBackup, { ok: true }>;
+
+export function SettingsScreen({ onPreview, onRestore }: { onPreview: (rows: PreviewRow[]) => void; onRestore: (r: RestoreRequest) => void }) {
   const p = usePalette();
   const store = useStore();
   const { settings, subscriptions, categories } = store;
@@ -62,10 +67,30 @@ export function SettingsScreen({ onPreview }: { onPreview: (rows: PreviewRow[]) 
     });
     if (res.canceled || !res.assets?.[0]) return;
     const text = await new File(res.assets[0].uri).text();
-    const preview = previewImport(text, subscriptions);
+    const preview = previewImport(text, subscriptions, store.today);
     if (!preview.ok) return Alert.alert('Can’t import this file', preview.error);
     if (!preview.rows.length) return Alert.alert('Nothing to import', 'The file has a header row but no data rows.');
     onPreview(preview.rows);
+  }
+
+  /** One file with everything; the share sheet saves it to Files, AirDrops it, and so on. */
+  async function backUp() {
+    const file = makeBackup({ subscriptions, categories, settings }, SCHEMA_VERSION);
+    await shareText(backupFileName(toLocalDate(new Date())), backupJson(file), { mimeType: 'application/json', UTI: 'public.json' });
+  }
+
+  async function pickBackup() {
+    const res = await DocumentPicker.getDocumentAsync({ type: ['application/json', 'public.json', 'text/plain'], copyToCacheDirectory: true });
+    if (res.canceled || !res.assets?.[0]) return;
+    let text: string;
+    try {
+      text = await new File(res.assets[0].uri).text();
+    } catch (e) {
+      return Alert.alert('Can’t read this file', `Nothing was changed. ${String(e)}`);
+    }
+    const parsed = parseBackup(text);
+    if (!parsed.ok) return Alert.alert('Can’t restore this file', parsed.error);
+    onRestore(parsed);
   }
 
   return (
@@ -176,6 +201,21 @@ export function SettingsScreen({ onPreview }: { onPreview: (rows: PreviewRow[]) 
           title="Export CSV"
           subtitle={`${subscriptions.length} subscription${subscriptions.length === 1 ? '' : 's'}`}
           onPress={() => shareText('subscriptions.csv', toCsv(subscriptions, categories))}
+          last
+        />
+      </Card>
+
+      <SectionHeader>Backup</SectionHeader>
+      <Card>
+        <Row
+          title="Back Up All Data"
+          subtitle="One file with every item, category, logo, logged amount, paid record and setting. Save it to Files or AirDrop it."
+          onPress={() => backUp().catch((e) => Alert.alert('Backup failed', String(e)))}
+        />
+        <Row
+          title="Restore from Backup…"
+          subtitle="Pick a backup file. You see what’s in it before anything is replaced."
+          onPress={() => pickBackup().catch((e) => Alert.alert('Restore failed', `Nothing was changed. ${String(e)}`))}
           last
         />
       </Card>

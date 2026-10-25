@@ -104,7 +104,7 @@ describe('trial reminders (FR-010)', () => {
     expect(diffReminders(before, pending)).toEqual({ toSchedule: [], toCancel: [] });
   });
 
-  it('shares the 60-reminder budget with renewals, soonest first (100 items, 10 trials)', () => {
+  it('shares the 60-reminder budget with renewals; trial reminders are kept first (100 items, 10 trials)', () => {
     const subs = [
       ...Array.from({ length: 90 }, (_, i) =>
         sub({ id: `r${i}`, anchorDate: `2026-${i < 45 ? '11' : '12'}-${String((i % 28) + 1).padStart(2, '0')}` }),
@@ -116,17 +116,18 @@ describe('trial reminders (FR-010)', () => {
     const plan = planReminders(subs, settings(), now);
     expect(plan).toHaveLength(RENEWAL_BUDGET);
     expect(plan.length + TEST_SLOTS).toBeLessThanOrEqual(IOS_PENDING_LIMIT);
-    // Both kinds compete for the same window.
-    expect(plan.some((r) => r.kind === 'trial')).toBe(true);
-    expect(plan.some((r) => r.kind === 'renewal')).toBe(true);
+    const all = subs.flatMap((s) => remindersFor(s, settings(), now));
+    // Deadlines outrank routine renewals: every trial reminder is in the window...
+    const trials = all.filter((r) => r.kind === 'trial');
+    expect(trials.length).toBeGreaterThan(0);
+    expect(trials.every((r) => plan.some((p) => p.id === r.id))).toBe(true);
+    // ...and renewals fill the rest, soonest first; nothing later than the last one kept.
     const times = plan.map((r) => r.fireAt.getTime());
     expect([...times].sort((a, b) => a - b)).toEqual(times);
-    const all = subs.flatMap((s) => remindersFor(s, settings(), now));
-    const cutoff = times[times.length - 1];
-    // Everything sooner than the last one kept is in the window, trial or renewal; nothing later is.
-    expect(all.filter((r) => r.fireAt.getTime() < cutoff).every((r) => plan.some((p) => p.id === r.id))).toBe(true);
-    expect(plan.every((p) => p.fireAt.getTime() <= cutoff)).toBe(true);
-    expect(all.filter((r) => r.kind === 'trial' && r.fireAt.getTime() > cutoff).length).toBeGreaterThan(0);
+    const renewals = plan.filter((r) => r.kind === 'renewal');
+    expect(renewals).toHaveLength(RENEWAL_BUDGET - trials.length);
+    const cutoff = Math.max(...renewals.map((r) => r.fireAt.getTime()));
+    expect(all.filter((r) => r.kind === 'renewal' && r.fireAt.getTime() < cutoff).every((r) => plan.some((p) => p.id === r.id))).toBe(true);
   });
 });
 

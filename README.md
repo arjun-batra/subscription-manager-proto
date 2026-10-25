@@ -34,6 +34,24 @@ and [docs/decisions.md](docs/decisions.md) for the choices made.
   pick the week (1st, 2nd, 3rd, 4th or last) and the day. Charges, reminders, totals and plan counts all follow it;
   "last" handles 4- and 5-week months. If the date you picked isn't that weekday, saving moves it to the next one
   (the screen tells you which).
+- **Mark as paid** (Batch 3): swipe right on a row and tap **Paid**, or touch and hold and pick **Mark Paid
+  (date)**. It marks the next unpaid charge, so doing it before the due date pays it early: the row moves on to the
+  following charge and that charge's reminder is cancelled. An **Undo** banner shows for a few seconds, and the menu
+  has **Undo Paid** afterwards. For bills that vary you can type what you paid (leave it blank to use the estimate).
+  Marking a plan's last payment early completes the plan.
+- **Paid in <month>**: the home card shows what has gone out this calendar month in CA$ (past charges plus anything
+  you marked paid this month, early payments included; actual amounts for bills that vary, $0 for trials until
+  they end, each plan instalment). It sits next to "Paid so far", which counts this month's charges by due date.
+- **Promo prices and cancel-by dates**: under **Deals and deadlines** on the edit screen, set **Promo price ends**
+  (the regular price and the date it starts, e.g. Rogers after 12 months) and/or **Cancel by** (a trial or anything
+  with a cancellation deadline). Totals use the regular price from that date, the card shows "After the promo
+  ends", Home lists both in a **Deadlines** section, and reminders fire 7 and 1 days before a promo ends and 3 and 1
+  days before a cancel-by date. These deadline reminders are kept first when the 60-reminder limit is reached.
+- **Backup and restore**: Settings → **Back Up All Data** saves everything (items, categories, logos, logged
+  amounts, paid marks, settings) as one `.json` file through the share sheet (Save to Files, AirDrop). **Restore
+  from Backup…** picks a file, shows what's in it and asks before replacing all current data in one step. Files
+  from newer app versions, damaged files and non-backups are refused with a reason, and nothing is changed. No
+  account or server is involved.
 - **Category filter**: chips across the top of Home (All, then each category). Picking one shows only that
   category's subscriptions, trials and plans, and the totals card shows that category's totals. The choice is kept
   while the app is open and goes back to All the next time it starts.
@@ -57,7 +75,7 @@ and [docs/decisions.md](docs/decisions.md) for the choices made.
   Export includes whether each item is cancelled and whether its reminder is on, so a backup restores as it was.
 - A **Manage Subscription** link on each item that has a manage URL, plus a shortcut to Apple's subscriptions page.
 - **The look**: Home is a native iOS list (SwiftUI through `@expo/ui`): swipe left on a row to cancel or delete,
-  swipe right to log an amount, or touch and hold for a menu (Edit, Log Amount, Manage, Mark Cancelled, Delete).
+  swipe right to mark paid or log an amount, or touch and hold for a menu (Edit, Mark Paid, Log Amount, Manage, Mark Cancelled, Delete).
   Each row has a logo: a brand matched by name (77 bundled, including Canadian ones like Rogers, Sonnet and
   Canada's Wonderland, see below), one you picked, a generic icon, or a coloured first letter, the totals card has a donut of average monthly spend by category with a text legend, the progress bar
   animates, and selecting or saving gives a light haptic tap. Categories and tabs use SF Symbols. The edit screen
@@ -150,7 +168,7 @@ Layout:
 
 Header row, any column order, case-insensitive, extra columns are ignored:
 
-`name, amount, currency, cycle, next charge date, categories, notes, manage url, status, reminders, first charge date, trial end date, total payments, varies, actuals, logo`
+`name, amount, currency, cycle, next charge date, categories, notes, manage url, status, reminders, first charge date, trial end date, total payments, varies, actuals, logo, promo ends, regular price, cancel by, paid`
 
 - `cycle`: `weekly`, `monthly`, `quarterly`, `yearly`, or `every N days|weeks|months|years`. A monthly or
   every-N-months cycle can add a weekday rule: `monthly on the 2nd tue`, `every 2 months on the last friday`
@@ -175,6 +193,13 @@ Header row, any column order, case-insensitive, extra columns are ignored:
   or `icon:<key>` with an optional colour, `icon:bolt:amber`. Brand slugs are the `slug` values in
   `src/ui/brands/data.ts`; icon keys and colours are in `src/ui/brands/icons.ts` (colours: red, amber, green, teal,
   blue, indigo, purple, pink, graphite, brown). An unknown value makes the row invalid, with the reason shown
+  Actuals can't be dated in the future
+- `promo ends` + `regular price`: optional, together. Charges on or after `promo ends` (`YYYY-MM-DD`) are at
+  `regular price`. Not for payment plans or bills that vary
+- `cancel by`: optional `YYYY-MM-DD` deadline to cancel (reminders 3 days and 1 day before)
+- `paid`: charges marked paid, as `charge@paidOn=amount` separated by `;`, for example
+  `2026-11-05@2026-10-25=16.49`. Each charge must be on the schedule; the paid-on date can't be in the future
+- For a complete copy including settings, use **Back Up All Data** (JSON) instead of CSV
 - Files without the newer columns (older exports) still import: no trial, no plan, a fixed amount
 - Export puts `'` in front of any cell starting with `=`, `+`, `-` or `@` so spreadsheets don't run it as a
   formula. Import removes it again.
@@ -190,7 +215,10 @@ How an item's logo is picked:
 2. **Automatic** (the default, and what every item from before the picker uses): the name is matched against each
    brand's aliases on whole leading words, ignoring case and accents. "Rogers Wireless", "Sonnet Insurance",
    "Canada's Wonderland", "Prime", "ChatGPT Plus", "SuperGrok", "Gemini Advanced", "Office 365" and
-   "Xbox Game Pass" all match. A picked logo the app no longer has falls back to Automatic.
+   "Xbox Game Pass" all match. One-word aliases that are also ordinary words or other businesses' names (Max,
+   Prime, Copilot, Nitro, Freedom, Shaw, Bell, Zoom, Notion, …) only match as the whole name or followed by plan
+   words like "Premium", "Monthly" or "Internet", so "Prime Gym", "Max Fitness", "Copilot Money", "Nitro PDF",
+   "Freedom 55" and "Shaw Academy" get a letter tile. A picked logo the app no longer has falls back to Automatic.
 3. **No match**: a coloured tile with the first letter.
 
 Brands come in two kinds:

@@ -53,6 +53,10 @@ describe('previewImport', () => {
       variable: false,
       actuals: [],
       logo: null,
+      promoEndDate: null,
+      regularAmount: null,
+      cancelByDate: null,
+      payments: [],
     });
   });
 
@@ -117,16 +121,16 @@ describe('toCsv', () => {
     const p = previewImport(toCsv(subs, cats), []);
     if (!p.ok) throw new Error(p.error);
     expect(p.rows.map((r) => r.draft)).toEqual([
-      { name: 'A, "quoted"', amount: 9.5, currency: 'CAD', cycle: { unit: 'week', every: 2 }, anchorDate: '2026-11-05', categoryNames: ['Streaming'], notes: 'line1\nline2', manageUrl: '', cancelled: false, remindersEnabled: true, startDate: null, trialEndDate: null, totalPayments: null, variable: false, actuals: [], logo: null },
-      { name: '=HYPERLINK("x")', amount: 100, currency: 'CAD', cycle: { unit: 'year', every: 1 }, anchorDate: '2027-01-31', categoryNames: [], notes: '-5 off, @promo', manageUrl: '', cancelled: true, remindersEnabled: false, startDate: '2027-01-31', trialEndDate: null, totalPayments: null, variable: false, actuals: [], logo: null },
+      { name: 'A, "quoted"', amount: 9.5, currency: 'CAD', cycle: { unit: 'week', every: 2 }, anchorDate: '2026-11-05', categoryNames: ['Streaming'], notes: 'line1\nline2', manageUrl: '', cancelled: false, remindersEnabled: true, startDate: null, trialEndDate: null, totalPayments: null, variable: false, actuals: [], logo: null, promoEndDate: null, regularAmount: null, cancelByDate: null, payments: [] },
+      { name: '=HYPERLINK("x")', amount: 100, currency: 'CAD', cycle: { unit: 'year', every: 1 }, anchorDate: '2027-01-31', categoryNames: [], notes: '-5 off, @promo', manageUrl: '', cancelled: true, remindersEnabled: false, startDate: '2027-01-31', trialEndDate: null, totalPayments: null, variable: false, actuals: [], logo: null, promoEndDate: null, regularAmount: null, cancelByDate: null, payments: [] },
     ]);
   });
 
   it('exports the cancelled flag and reminder setting', () => {
     const csv = toCsv([sub({ name: 'Old', cancelled: true, remindersEnabled: false })], []);
     const [header, row] = csv.split('\r\n');
-    expect(header).toBe('name,amount,currency,cycle,next charge date,categories,notes,manage url,status,reminders,first charge date,trial end date,total payments,varies,actuals,logo');
-    expect(row.split(',').slice(-8)).toEqual(['cancelled', 'off', '', '', '', '', '', '']);
+    expect(header).toBe('name,amount,currency,cycle,next charge date,categories,notes,manage url,status,reminders,first charge date,trial end date,total payments,varies,actuals,logo,promo ends,regular price,cancel by,paid');
+    expect(row.split(',').slice(-12)).toEqual(['cancelled', 'off', '', '', '', '', '', '', '', '', '', '']);
   });
 
   it('guards cells a spreadsheet would run as formulas', () => {
@@ -180,7 +184,7 @@ describe('toCsv', () => {
       sub({ name: 'Old', logo: 'brand:gone' }),
     ];
     const csv = toCsv(subs, []);
-    expect(csv.trimEnd().split('\r\n').slice(1).map((r) => r.split(',').pop())).toEqual(['brand:rogers', 'icon:bolt:amber', '', '']);
+    expect(csv.trimEnd().split('\r\n').slice(1).map((r) => r.split(',')[15])).toEqual(['brand:rogers', 'icon:bolt:amber', '', '']);
     const p = previewImport(csv, []);
     if (!p.ok) throw new Error(p.error);
     expect(p.rows.map((r) => r.draft?.logo)).toEqual(['brand:rogers', 'icon:bolt:amber', null, null]);

@@ -114,6 +114,65 @@ describe('brand marks', () => {
     expect(matchBrand(name)?.slug ?? null).toBe(slug);
   });
 
+  it.each([
+    ['Prime Gym', null],
+    ['Max Fitness', null],
+    ['Copilot Money', null],
+    ['Nitro PDF', null],
+    ['Freedom 55', null],
+    ['Freedom 55 Financial', null],
+    ['Shaw Academy', null],
+    ['Bell Media Club', null],
+    ['Medium Roast Coffee Club', null],
+    ['Zoom Car Rental', null],
+    ['Presto Pizza', null],
+    ['Crave Cookies', null],
+    ['Slack Line Gym', null],
+    ['Notion Press', null],
+  ])('ambiguous one-word alias, other business: %s -> no brand', (name, slug) => {
+    expect(matchBrand(name)?.slug ?? null).toBe(slug);
+  });
+
+  it.each([
+    ['Max', 'max'],
+    ['HBO Max', 'max'],
+    ['Max Ad-Free', 'max'],
+    ['Max Ultimate', 'max'],
+    ['HBO', 'max'],
+    ['Prime', 'amazon'],
+    ['Prime Monthly', 'amazon'],
+    ['Prime Membership', 'amazon'],
+    ['Amazon Prime', 'amazon'],
+    ['Prime Video', 'primevideo'],
+    ['Copilot', 'github'],
+    ['GitHub Copilot', 'github'],
+    ['Copilot Pro', 'microsoft365'],
+    ['Nitro', 'discord'],
+    ['Discord Nitro', 'discord'],
+    ['Freedom', 'freedommobile'],
+    ['Freedom Mobile', 'freedommobile'],
+    ['Freedom Home Internet', 'freedommobile'],
+    ['Shaw', 'shaw'],
+    ['Shaw Internet', 'shaw'],
+    ['Shaw TV', 'shaw'],
+    ['Bell Fibe', 'bell'],
+    ['Bell Canada', 'bell'],
+    ['Notion Plus', 'notion'],
+    ['Zoom Pro', 'zoom'],
+    ['Spotify Premium Family', 'spotify'],
+    ['Netflix Standard with Ads', 'netflix'],
+    ['Rogers Ignite', 'rogers'],
+    ['Sonnet Car Insurance', 'sonnet'],
+  ])('true positives still match: %s -> %s', (name, slug) => {
+    expect(matchBrand(name)?.slug ?? null).toBe(slug);
+  });
+
+  it('a picked logo always wins over the name match', () => {
+    expect(resolveLogo('Prime Gym', 'brand:amazon')).toMatchObject({ brand: { slug: 'amazon' } });
+    expect(resolveLogo('Max', 'icon:gym')).toMatchObject({ kind: 'icon' });
+    expect(resolveLogo('Prime Gym', null).kind).toBe('letter');
+  });
+
   it('normalizes names', () => {
     expect(normalizeName('  Apple TV+ (Family) ')).toBe('apple tv+ family');
     expect(normalizeName('Crème')).toBe('creme');
