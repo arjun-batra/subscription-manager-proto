@@ -1,5 +1,3 @@
-// eslint-plugin-import can't follow expo-notifications' re-exported enums; tsc checks these.
-/* eslint-disable import/namespace */
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 

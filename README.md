@@ -1,6 +1,6 @@
 # Subscriptions (prototype)
 
-A privacy-first subscription tracker for iPhone, built with Expo (SDK 58) and run in **Expo Go**.
+A privacy-first subscription tracker for iPhone, built with Expo (SDK 54, fallback branch) and run in **Expo Go**.
 Your data stays on your phone. There's no account, no analytics, no backend and no network calls in the app's code.
 
 This is a one-week prototype. See [docs/venture.md](docs/venture.md) for the goal and kill/park rules,
@@ -39,9 +39,10 @@ and [docs/decisions.md](docs/decisions.md) for the choices made.
 
 **What you need**
 
-- **Expo Go 58.0.5 or newer** from the App Store.
-  - The App Store listing (seller 650 Industries, Oct 22 2026) says "This version adds support for SDK 58": <https://apps.apple.com/app/expo-go/id982107779>.
-  - Expo's troubleshooting page still says App Store Expo Go stops at SDK 54: <https://docs.expo.dev/troubleshooting/expo-go-version-mismatch/>. If your App Store won't offer 58.x, use the SDK 54 branch `fix/sdk-54` (see `docs/decisions.md`).
+- **Expo Go for SDK 54.**
+  - This is the SDK 54 fallback branch (`fix/sdk-54`). `main` targets SDK 58.
+  - Expo's troubleshooting page says the App Store build of Expo Go supports SDK 54 projects: <https://docs.expo.dev/troubleshooting/expo-go-version-mismatch/>.
+  - If the App Store's Expo Go has already moved past SDK 54 and refuses this project, use `main` (SDK 58) instead.
 - Sign in to Expo Go with the same Expo account as Expo CLI (`arjunbatra`). On a physical iPhone, Expo Go has to be signed in to the same account as the CLI before it can see a dev server: <https://docs.expo.dev/troubleshooting/expo-go-sign-in-required/>.
 
 ### Option A (supported): from a computer running the dev server

@@ -24,7 +24,6 @@
     },
     "plugins": [
       "expo-sqlite",
-      "expo-sharing",
       "@react-native-community/datetimepicker",
       [
         "expo-notifications",

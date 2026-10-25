@@ -28,4 +28,4 @@ This is a **Prototype-track** Expo app (one week, $0). Keep it light: ship worki
 
 ## Expo docs
 
-Expo changes every SDK. Check the versioned docs for SDK 58 (https://docs.expo.dev/versions/v58.0.0/) rather than memory.
+Expo changes every SDK. Check the versioned docs for SDK 54 on this branch (https://docs.expo.dev/versions/v54.0.0/) rather than memory.
