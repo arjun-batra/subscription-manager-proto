@@ -31,6 +31,7 @@
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "check:no-network": "node scripts/check-no-network.js",
+    "check:expo-go": "node scripts/check-expo-go.js",
     "doctor": "expo-doctor"
   },
   "private": true,

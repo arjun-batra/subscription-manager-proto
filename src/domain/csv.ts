@@ -78,9 +78,17 @@ export const CSV_COLUMNS = [
 
 const FORMULA_START = /^[=+\-@\t\r]/;
 
-/** Undoes the export's formula guard: a leading ' before = + - @ is dropped. */
+/**
+ * True when the export prefixes `'`: the value starts like a formula, or is already
+ * `'`-prefixed in front of one (so a real leading `'` like "'-quoted" survives the round trip).
+ */
+function needsGuard(v: string): boolean {
+  return FORMULA_START.test(v) || (v.startsWith("'") && needsGuard(v.slice(1)));
+}
+
+/** Undoes the export's formula guard: drops the one leading ' that esc() added. */
 function unguard(v: string): string {
-  return v.startsWith("'") && FORMULA_START.test(v.slice(1)) ? v.slice(1) : v;
+  return v.startsWith("'") && needsGuard(v.slice(1)) ? v.slice(1) : v;
 }
 
 /** "monthly", "every 2 weeks", "quarterly", "every 10 days", ... */
@@ -180,6 +188,9 @@ export function previewImport(text: string, existing: Subscription[]): ImportPre
     if (!['', 'on', 'off', 'yes', 'no', 'true', 'false'].includes(rem)) problems.push('reminders must be on or off');
     const startDate = get(r, 'start');
     if (startDate && !isValidLocalDate(startDate)) problems.push('first charge date must be YYYY-MM-DD');
+    else if (startDate && isValidLocalDate(anchorDate) && startDate > anchorDate) {
+      problems.push("first charge date can't be after the next charge date");
+    }
     if (problems.length || !cycle) {
       return { line, status: 'invalid', reason: problems.join('; '), checked: false };
     }
@@ -228,7 +239,7 @@ function cycleToCsv(c: Cycle): string {
  * formula (= + - @, tab, CR), per OWASP CSV-injection guidance. Import strips it again.
  */
 export function esc(v: string): string {
-  const safe = FORMULA_START.test(v) ? `'${v}` : v;
+  const safe = needsGuard(v) ? `'${v}` : v;
   return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 

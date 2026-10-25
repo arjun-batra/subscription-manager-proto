@@ -31,6 +31,8 @@ jobs:
         run: npx jest --ci
       - name: Privacy guard (no network calls in our code)
         run: npm run check:no-network
+      - name: Expo Go config (no runtimeVersion, updates.url or expo-updates)
+        run: npm run check:expo-go
       - name: Expo doctor
         run: npx --yes expo-doctor
       - name: Bundle for iOS

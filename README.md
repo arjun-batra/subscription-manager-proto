@@ -37,29 +37,54 @@ and [docs/decisions.md](docs/decisions.md) for the choices made.
 
 ## Open it on your iPhone with Expo Go
 
-You need the free **Expo Go** app from the App Store (it must support SDK 58) and the Expo account `arjunbatra`.
+**What you need**
 
-**Option A: a published update (no computer needed after publishing).** Once an EAS Update has been published for
-this project, sign in to Expo Go as `arjunbatra`. The project appears under your account in Expo Go, or you can scan
-the QR code on the update's page at
-<https://expo.dev/accounts/arjunbatra/projects/subscription-manager-proto>.
+- **Expo Go 58.0.5 or newer** from the App Store.
+  - The App Store listing (seller 650 Industries, Oct 22 2026) says "This version adds support for SDK 58": <https://apps.apple.com/app/expo-go/id982107779>.
+  - Expo's troubleshooting page still says App Store Expo Go stops at SDK 54: <https://docs.expo.dev/troubleshooting/expo-go-version-mismatch/>. If your App Store won't offer 58.x, use the SDK 54 branch `fix/sdk-54` (see `docs/decisions.md`).
+- Sign in to Expo Go with the same Expo account as Expo CLI (`arjunbatra`). On a physical iPhone, Expo Go has to be signed in to the same account as the CLI before it can see a dev server: <https://docs.expo.dev/troubleshooting/expo-go-sign-in-required/>.
 
-**Option B: from a computer running the dev server.**
+### Option A (supported): from a computer running the dev server
 
 ```bash
 git clone https://github.com/arjun-batra/subscription-manager-proto.git
 cd subscription-manager-proto
-npm ci              # needs Node 22 or newer
-npx expo start      # add --tunnel if the phone isn't on the same Wi-Fi
+npm ci                     # needs Node 22 or newer
+npx expo login             # once, as arjunbatra (skip if `npx expo whoami` already says arjunbatra)
+npx expo start --tunnel    # or plain `npx expo start` if the phone is on the same Wi-Fi
 ```
 
-Scan the QR code with the iPhone Camera app and it opens in Expo Go.
+1. Wait for the QR code. With `--tunnel` it shows a URL like `http://c-arjunbatra-….on.expo.app`.
+2. Scan the QR code with the iPhone **Camera** app and it opens in Expo Go. Or, in Expo Go, open the project listed under the signed-in account.
+3. Keep the terminal running while you use the app. Expo Go loads the app's code from this dev server.
 
-When it first asks, allow notifications so reminders can fire.
+About `--tunnel` in Expo CLI 58:
 
-**Good to know about Expo Go:** your data is saved in Expo Go's storage on the phone. It survives closing and
-reopening the app, but deleting Expo Go deletes it, so use **Settings → Export CSV** for a backup. Expo Go itself
-collects its own usage and crash data; this app's code doesn't add any.
+- It uses Expo's own tunnel by default. `npx expo start --help` describes the flag as "`--tunnel [provider]` Use a tunnel. Default: expo (Legacy option: ngrok)".
+- So `@expo/ngrok` isn't needed. The ngrok steps in the docs (<https://docs.expo.dev/more/expo-cli/#tunneling>) now apply only to `--tunnel ngrok`.
+- Tunnel URLs are public, with random characters added. Only the app's code goes through the tunnel. Your subscriptions stay in the app's storage on the phone.
+
+### Option B (not confirmed on a device): a published EAS Update
+
+- Expo's expo-updates reference says: "To test the content of an update in Expo Go, run `eas update` and then browse to the update in Expo Go" (<https://docs.expo.dev/versions/latest/sdk/updates/>).
+- To open a specific update group, use the URL from Expo's QR-code endpoint (`slug` defaults to `exp`, which targets Expo Go: <https://docs.expo.dev/more/qr-codes/>):
+  - `https://qr.expo.dev/eas-update?projectId=397c0dd9-be0b-4d81-8d6a-4d94ce66c6be&groupId=<group id>` gives a QR code.
+  - Add `&format=url` to get the `exp://u.expo.dev/<project id>/group/<group id>` link.
+  - Scan it with the Camera app while Expo Go is signed in as `arjunbatra`.
+- Caveats:
+  - Another Expo page says "Updates published with the `runtimeVersion` field can't be loaded in Expo Go" (<https://docs.expo.dev/build/updates/#previewing-updates-in-development-builds>).
+  - `eas update` always writes a `runtimeVersion` and `updates.url` into app.json and installs `expo-updates`.
+  - The two pages conflict, so treat this option as untested until it opens on the phone.
+- If you publish:
+  - Do it from a scratch copy and don't commit those changes.
+  - CI (`npm run check:expo-go`) fails if `runtimeVersion`, `updates.url` or `expo-updates` lands in the repo.
+  - `expo-updates` is also on the privacy guard's banned list.
+
+### Good to know
+
+- When the app first asks, allow notifications so reminders can fire.
+- Your data is saved in Expo Go's storage on the phone. It survives closing and reopening the app, but deleting Expo Go deletes it. Use **Settings → Export CSV** for a backup.
+- Expo Go collects its own usage and crash data. This app's code doesn't add any.
 
 ## Develop
 
@@ -69,6 +94,7 @@ npx expo lint          # lint
 npx tsc --noEmit       # typecheck
 npx jest               # unit tests for the pure logic in src/domain
 npm run check:no-network
+npm run check:expo-go   # keeps app.json loadable in Expo Go
 npx expo export --platform ios   # confirm it bundles
 ```
 

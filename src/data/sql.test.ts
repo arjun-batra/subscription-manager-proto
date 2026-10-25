@@ -4,7 +4,14 @@
  * withExclusiveTransactionAsync does BEGIN EXCLUSIVE / COMMIT / ROLLBACK the same way.
  */
 import type { ImportDraft } from '../domain/csv';
-import { importDraftsInto, loadSnapshot, migrate, SCHEMA_VERSION, type SqlDb, type SqlExec, type SqlParam } from './sql';
+import {
+  DuplicateCategoryError,
+  importDraftsInto,
+  loadSnapshot,
+  migrate,
+  saveCategoryIn,
+  SCHEMA_VERSION,
+  type SqlDb, type SqlExec, type SqlParam } from './sql';
 
 interface Stmt {
   run(...p: SqlParam[]): unknown;
@@ -19,7 +26,7 @@ interface NodeSqlite {
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: string) => NodeSqlite };
 
-function nodeDb(opts: { failOnSubscriptionInsert?: number } = {}): SqlDb & { raw: NodeSqlite } {
+function nodeDb(opts: { failOnSubscriptionInsert?: number; failOnExec?: RegExp } = {}): SqlDb & { raw: NodeSqlite } {
   const raw = new DatabaseSync(':memory:');
   let subInserts = 0;
   let inTxn = false;
@@ -32,6 +39,7 @@ function nodeDb(opts: { failOnSubscriptionInsert?: number } = {}): SqlDb & { raw
     }) as F;
   const exec: SqlExec = {
     async execAsync(source) {
+      if (opts.failOnExec?.test(source)) throw new Error('app killed (simulated)');
       raw.exec(source);
     },
     async runAsync(source: string, ...params: SqlParam[]) {
@@ -136,24 +144,95 @@ describe('import transaction', () => {
   });
 });
 
+const V1_SCHEMA = `
+  CREATE TABLE subscriptions (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, amount REAL NOT NULL,
+    currency TEXT NOT NULL, cycle_unit TEXT NOT NULL, cycle_every INTEGER NOT NULL, anchor_date TEXT NOT NULL,
+    notes TEXT NOT NULL DEFAULT '', manage_url TEXT NOT NULL DEFAULT '', reminders_enabled INTEGER NOT NULL DEFAULT 1,
+    cancelled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE TABLE categories (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL);
+  CREATE TABLE subscription_categories (subscription_id TEXT NOT NULL, category_id TEXT NOT NULL,
+    PRIMARY KEY (subscription_id, category_id));
+  CREATE TABLE settings (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+  INSERT INTO subscriptions VALUES ('s1','Netflix',16.49,'CAD','month',1,'2026-01-31','','',1,0,'t','t');
+  PRAGMA user_version = 1;
+`;
+const userVersion = (db: ReturnType<typeof nodeDb>) =>
+  (db.raw.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+const columns = (db: ReturnType<typeof nodeDb>) =>
+  (db.raw.prepare('PRAGMA table_info(subscriptions)').all() as { name: string }[]).map((c) => c.name);
+
 describe('migrations', () => {
   it('upgrades a version 1 database and keeps its rows', async () => {
     const db = nodeDb();
-    db.raw.exec(`
-      CREATE TABLE subscriptions (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, amount REAL NOT NULL,
-        currency TEXT NOT NULL, cycle_unit TEXT NOT NULL, cycle_every INTEGER NOT NULL, anchor_date TEXT NOT NULL,
-        notes TEXT NOT NULL DEFAULT '', manage_url TEXT NOT NULL DEFAULT '', reminders_enabled INTEGER NOT NULL DEFAULT 1,
-        cancelled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-      CREATE TABLE categories (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL);
-      CREATE TABLE subscription_categories (subscription_id TEXT NOT NULL, category_id TEXT NOT NULL,
-        PRIMARY KEY (subscription_id, category_id));
-      CREATE TABLE settings (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
-      INSERT INTO subscriptions VALUES ('s1','Netflix',16.49,'CAD','month',1,'2026-01-31','','',1,0,'t','t');
-      PRAGMA user_version = 1;
-    `);
+    db.raw.exec(V1_SCHEMA);
     await migrate(db);
-    expect((db.raw.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION);
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
     const snap = await loadSnapshot(db);
     expect(snap.subscriptions).toEqual([expect.objectContaining({ id: 's1', name: 'Netflix', startDate: null })]);
+  });
+
+  it('creates a fresh database at the current version', async () => {
+    const db = nodeDb();
+    await migrate(db);
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
+    expect(columns(db)).toContain('start_date');
+    await migrate(db); // no-op the second time
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
+  });
+
+  it('rolls the v2 step back if the app dies before user_version is bumped, then retries cleanly', async () => {
+    const crashing = nodeDb({ failOnExec: /user_version = 2/ });
+    crashing.raw.exec(V1_SCHEMA);
+    await expect(migrate(crashing)).rejects.toThrow('app killed (simulated)');
+    // The ALTER was rolled back with the failed step: still a clean v1 database.
+    expect(userVersion(crashing)).toBe(1);
+    expect(columns(crashing)).not.toContain('start_date');
+  });
+
+  it('upgrades after an interrupted attempt without "duplicate column name"', async () => {
+    const db = nodeDb();
+    db.raw.exec(V1_SCHEMA);
+    // Same database: a first attempt dies before the bump, the next launch runs it again.
+    let calls = 0;
+    const first: SqlDb = {
+      ...db,
+      async withExclusiveTransactionAsync(task) {
+        return db.withExclusiveTransactionAsync(async (txn) => {
+          await task({
+            ...txn,
+            async execAsync(source: string) {
+              calls += 1;
+              if (/user_version = 2/.test(source)) throw new Error('app killed (simulated)');
+              await txn.execAsync(source);
+            },
+          });
+        });
+      },
+    };
+    await expect(migrate(first)).rejects.toThrow('app killed (simulated)');
+    expect(calls).toBe(2);
+    await migrate(db);
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
+    expect(columns(db).filter((c) => c === 'start_date')).toHaveLength(1);
+    expect((await loadSnapshot(db)).subscriptions.map((x) => x.name)).toEqual(['Netflix']);
+  });
+});
+
+describe('saveCategoryIn', () => {
+  it('creates and renames inside the exclusive transaction', async () => {
+    const db = nodeDb();
+    await migrate(db);
+    await saveCategoryIn(db, { id: 'c1', name: '  Streaming ' });
+    await saveCategoryIn(db, { id: 'c1', name: 'Video' });
+    expect((await loadSnapshot(db)).categories).toEqual([expect.objectContaining({ id: 'c1', name: 'Video' })]);
+  });
+
+  it('rejects a name that clashes ignoring case and writes nothing', async () => {
+    const db = nodeDb();
+    await migrate(db);
+    await saveCategoryIn(db, { id: 'c1', name: 'Family' });
+    await expect(saveCategoryIn(db, { id: 'c2', name: 'family' })).rejects.toBeInstanceOf(DuplicateCategoryError);
+    expect(count(db, 'categories')).toBe(1);
+    await expect(saveCategoryIn(db, { id: 'c3', name: '   ' })).rejects.toThrow('Name is required');
   });
 });
