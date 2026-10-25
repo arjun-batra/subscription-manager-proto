@@ -82,6 +82,7 @@ export function textPairs(p: Palette): [string, string, string][] {
     ['onAccent on accent', p.onAccent, p.accent],
     ['danger on surface', p.danger, p.surface],
     ['warning text on warning bg', p.warningText, p.warningBg],
+    ['warning text on surface', p.warningText, p.surface],
     ['chip text on chip', p.chipText, p.chipBg],
     ['selected chip text', p.chipSelectedText, p.chipSelectedBg],
   ];

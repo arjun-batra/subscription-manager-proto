@@ -1,0 +1,163 @@
+import * as DocumentPicker from 'expo-document-picker';
+import { File, Paths } from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import { useState } from 'react';
+import { Alert, ScrollView, Text, TextInput, View } from 'react-native';
+
+import { CSV_TEMPLATE, previewImport, toCsv, type PreviewRow } from '../domain/csv';
+import { isValidCurrency } from '../domain/money';
+import { sendTestNotification, requestPermission } from '../services/notifications';
+import { Card, Chip, Field, Row, SectionHeader } from './components';
+import { useStore } from './store';
+import { usePalette } from './theme';
+
+async function shareText(filename: string, text: string) {
+  const file = new File(Paths.cache, filename);
+  if (file.exists) file.delete();
+  file.create();
+  await file.write(text);
+  await Sharing.shareAsync(file.uri, { mimeType: 'text/csv', UTI: 'public.comma-separated-values-text' });
+}
+
+export function SettingsScreen({ onPreview }: { onPreview: (rows: PreviewRow[]) => void }) {
+  const p = usePalette();
+  const store = useStore();
+  const { settings, subscriptions, categories } = store;
+  const [home, setHome] = useState(settings.homeCurrency);
+  const [homeError, setHomeError] = useState('');
+
+  const foreign = [...new Set(subscriptions.map((s) => s.currency))]
+    .filter((c) => c !== settings.homeCurrency)
+    .sort();
+
+  async function saveHome() {
+    const code = home.trim().toUpperCase();
+    if (!isValidCurrency(code)) return setHomeError('Use a 3-letter code, like CAD.');
+    setHomeError('');
+    await store.saveSettings({ ...settings, homeCurrency: code });
+  }
+
+  async function setRate(code: string, text: string) {
+    const rate = Number(text.replace(',', '.'));
+    const rates = { ...settings.rates };
+    if (!text.trim()) delete rates[code];
+    else if (Number.isFinite(rate) && rate > 0) rates[code] = rate;
+    else return;
+    await store.saveSettings({ ...settings, rates, ratesUpdatedAt: new Date().toISOString() });
+  }
+
+  async function pickCsv() {
+    const res = await DocumentPicker.getDocumentAsync({
+      type: ['text/csv', 'text/comma-separated-values', 'text/plain', 'public.comma-separated-values-text'],
+      copyToCacheDirectory: true,
+    });
+    if (res.canceled || !res.assets?.[0]) return;
+    const text = await new File(res.assets[0].uri).text();
+    const preview = previewImport(text, subscriptions);
+    if (!preview.ok) return Alert.alert('Can’t import this file', preview.error);
+    if (!preview.rows.length) return Alert.alert('Nothing to import', 'The file has a header row but no data rows.');
+    onPreview(preview.rows);
+  }
+
+  return (
+    <ScrollView style={{ backgroundColor: p.background }} contentContainerStyle={{ paddingBottom: 32 }} keyboardShouldPersistTaps="handled">
+      <Text accessibilityRole="header" style={{ color: p.text, fontSize: 34, fontWeight: '700', paddingHorizontal: 20, paddingTop: 8 }}>
+        Settings
+      </Text>
+
+      <SectionHeader>Currency</SectionHeader>
+      <Card>
+        <Field
+          label="Home currency"
+          value={home}
+          onChangeText={(t) => setHome(t.toUpperCase())}
+          onEndEditing={saveHome}
+          onSubmitEditing={saveHome}
+          autoCapitalize="characters"
+          maxLength={3}
+          error={homeError}
+        />
+        {foreign.length === 0 ? (
+          <Text style={{ color: p.secondaryText, fontSize: 14, padding: 16 }}>
+            All subscriptions are in {settings.homeCurrency}. Rates appear here when you add another currency.
+          </Text>
+        ) : (
+          foreign.map((code) => (
+            <View key={code} style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10 }}>
+              <Text style={{ color: p.text, fontSize: 17, flex: 1 }}>
+                1 {code} = {settings.rates[code] === undefined ? '?' : ''}
+              </Text>
+              <TextInput
+                defaultValue={settings.rates[code] === undefined ? '' : String(settings.rates[code])}
+                onEndEditing={(e) => setRate(code, e.nativeEvent.text)}
+                keyboardType="decimal-pad"
+                placeholder="rate needed"
+                placeholderTextColor={p.secondaryText}
+                accessibilityLabel={`Rate from ${code} to ${settings.homeCurrency}`}
+                style={{ color: p.text, fontSize: 17, minWidth: 100, textAlign: 'right' }}
+              />
+              <Text style={{ color: p.text, fontSize: 17, marginLeft: 6 }}>{settings.homeCurrency}</Text>
+            </View>
+          ))
+        )}
+        {settings.ratesUpdatedAt ? (
+          <Text style={{ color: p.secondaryText, fontSize: 13, paddingHorizontal: 16, paddingBottom: 12 }}>
+            Rates entered by you, last updated {settings.ratesUpdatedAt.slice(0, 10)}. The app never fetches rates.
+          </Text>
+        ) : null}
+      </Card>
+
+      <SectionHeader>Reminders</SectionHeader>
+      <Card>
+        <Text style={{ color: p.text, fontSize: 17, paddingHorizontal: 16, paddingTop: 12 }}>Remind me</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', padding: 12, paddingBottom: 4 }}>
+          {[0, 1, 2, 3, 7].map((d) => (
+            <Chip
+              key={d}
+              label={d === 0 ? 'Same day' : `${d} day${d > 1 ? 's' : ''} before`}
+              selected={settings.leadDays === d}
+              onPress={() => store.saveSettings({ ...settings, leadDays: d })}
+            />
+          ))}
+        </View>
+        <Text style={{ color: p.text, fontSize: 17, paddingHorizontal: 16 }}>At</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', padding: 12, paddingBottom: 4 }}>
+          {[8, 9, 12, 18, 20].map((h) => (
+            <Chip
+              key={h}
+              label={`${h % 12 === 0 ? 12 : h % 12}:00 ${h < 12 ? 'AM' : 'PM'}`}
+              selected={settings.reminderHour === h}
+              onPress={() => store.saveSettings({ ...settings, reminderHour: h })}
+            />
+          ))}
+        </View>
+        <Row
+          title="Send Test Notification"
+          subtitle="Arrives in about 5 seconds. Lock your phone to see it."
+          onPress={async () => {
+            const perm = await requestPermission();
+            if (perm === 'denied') return Alert.alert('Notifications are off', 'Turn them on in Settings first.');
+            await sendTestNotification();
+          }}
+          last
+        />
+      </Card>
+
+      <SectionHeader>Your data</SectionHeader>
+      <Card>
+        <Row title="Import CSV…" subtitle="Preview before anything is saved" onPress={() => pickCsv().catch((e) => Alert.alert('Import failed', String(e)))} />
+        <Row title="Share CSV Template" subtitle="Fill it in on a computer, then import" onPress={() => shareText('subscriptions-template.csv', CSV_TEMPLATE)} />
+        <Row
+          title="Export CSV"
+          subtitle={`${subscriptions.length} subscription${subscriptions.length === 1 ? '' : 's'}`}
+          onPress={() => shareText('subscriptions.csv', toCsv(subscriptions, categories))}
+          last
+        />
+      </Card>
+      <Text style={{ color: p.secondaryText, fontSize: 13, marginHorizontal: 20, marginTop: 8 }}>
+        Your data is stored only on this phone and in your own device backups. This app has no account, no analytics, and
+        makes no network calls.
+      </Text>
+    </ScrollView>
+  );
+}
