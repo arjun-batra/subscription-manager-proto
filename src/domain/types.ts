@@ -99,6 +99,12 @@ export interface Subscription {
   regularAmount?: number | null;
   /** Optional deadline to cancel by (a trial, a contract notice period). Reminders 3 and 1 day before. */
   cancelByDate?: LocalDate | null;
+  /**
+   * When a deadline (trial end, cancel-by, promo end) was last set or changed (ISO). A catch-up
+   * reminder for a deadline saved too late for its lead reminders keys on this, not on updatedAt,
+   * so marking paid or other edits don't send it again.
+   */
+  deadlineSetAt?: string | null;
   categoryIds: string[];
   notes: string;
   manageUrl: string;

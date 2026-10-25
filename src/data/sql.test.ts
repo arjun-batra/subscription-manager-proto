@@ -491,7 +491,7 @@ const V5_SCHEMA = `${V4_SCHEMA.replace('PRAGMA user_version = 4;', '')}
   PRAGMA user_version = 5;
 `;
 
-const V6_COLUMNS = ['payments', 'promo_end_date', 'regular_amount', 'cancel_by_date'];
+const V6_COLUMNS = ['payments', 'promo_end_date', 'regular_amount', 'cancel_by_date', 'deadline_set_at'];
 
 describe('migration to v6 (paid records, promos, cancel-by)', () => {
   it('upgrades a version 5 database; nothing is marked paid, no promos or deadlines, data kept', async () => {
@@ -504,7 +504,7 @@ describe('migration to v6 (paid records, promos, cancel-by)', () => {
     const snap = await loadSnapshot(db);
     expect(snap.subscriptions).toHaveLength(before.subscriptions.length);
     for (const x of snap.subscriptions) {
-      expect(x).toMatchObject({ payments: [], promoEndDate: null, regularAmount: null, cancelByDate: null });
+      expect(x).toMatchObject({ payments: [], promoEndDate: null, regularAmount: null, cancelByDate: null, deadlineSetAt: null });
       const old = before.subscriptions.find((b) => b.id === x.id)!;
       expect({ ...x, payments: undefined, promoEndDate: undefined, regularAmount: undefined, cancelByDate: undefined }).toEqual({
         ...old,
@@ -528,7 +528,7 @@ describe('migration to v6 (paid records, promos, cancel-by)', () => {
     expect(columns(db)).toEqual(expect.arrayContaining(V6_COLUMNS));
   });
 
-  it.each([/ADD COLUMN payments/, /ADD COLUMN promo_end_date/, /ADD COLUMN regular_amount/, /ADD COLUMN cancel_by_date/, /user_version = 6/])(
+  it.each([/ADD COLUMN payments/, /ADD COLUMN promo_end_date/, /ADD COLUMN regular_amount/, /ADD COLUMN cancel_by_date/, /ADD COLUMN deadline_set_at/, /user_version = 6/])(
     'rolls back a crash at %s to v5, then retries cleanly',
     async (at) => {
       const db = nodeDb();
@@ -580,11 +580,13 @@ describe('migration to v6 (paid records, promos, cancel-by)', () => {
       cancelByDate: '2027-03-01',
       payments: [{ date: '2026-11-05', paidOn: '2026-11-01', amount: 16.49 }],
     });
+    // An imported item with a deadline is stamped at import time, for the catch-up reminder.
+    expect(r.deadlineSetAt).toBe(r.createdAt);
     await db.withExclusiveTransactionAsync((txn) =>
-      writeSub(txn, { ...r, promoEndDate: null, regularAmount: null, cancelByDate: null, payments: [{ date: '2026-12-05', paidOn: '2026-11-02', amount: 20, loggedActual: true }] }),
+      writeSub(txn, { ...r, promoEndDate: null, regularAmount: null, cancelByDate: null, deadlineSetAt: null, payments: [{ date: '2026-12-05', paidOn: '2026-11-02', amount: 20, loggedActual: true }] }),
     );
     snap = await loadSnapshot(db);
-    expect(snap.subscriptions[0]).toMatchObject({ promoEndDate: null, regularAmount: null, cancelByDate: null });
+    expect(snap.subscriptions[0]).toMatchObject({ promoEndDate: null, regularAmount: null, cancelByDate: null, deadlineSetAt: null });
     expect(snap.subscriptions[0].payments).toEqual([{ date: '2026-12-05', paidOn: '2026-11-02', amount: 20, loggedActual: true }]);
     db.raw.exec(`UPDATE subscriptions SET payments = 'not json'`);
     expect((await loadSnapshot(db)).subscriptions[0].payments).toEqual([]);

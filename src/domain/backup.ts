@@ -10,12 +10,14 @@
  * `version` is the backup format; files from a newer format are refused with a clear message, older
  * formats are upgraded step by step through BACKUP_MIGRATIONS. `schemaVersion` records which
  * database schema wrote the file; fields added after it (e.g. paid records in schema 6) are filled
- * with their defaults, so a backup from an older build restores cleanly.
+ * with their defaults, so a backup from an older build restores cleanly. A file from a newer schema
+ * than this app's is refused, since it could hold fields this build would silently drop.
  */
 import { isValidCycle, isValidLocalDate } from './dates';
 import { normalizeLogo } from './logo';
 import { isValidCurrency } from './money';
 import { MAX_PLAN_PAYMENTS } from './schedule';
+import { SCHEMA_VERSION } from '../data/sql';
 import {
   DEFAULT_SETTINGS,
   type ActualCharge,
@@ -69,6 +71,10 @@ export type ParsedBackup =
   | { ok: true; backup: BackupFile; migratedFrom: number | null }
   | { ok: false; error: string };
 
+/** Names and values echoed in error messages are cut to this many characters. */
+export const ERROR_TEXT_MAX = 40;
+const clip = (s: string): string => (s.length > ERROR_TEXT_MAX ? `${s.slice(0, ERROR_TEXT_MAX - 1)}…` : s);
+
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback);
 const dateOrNull = (v: unknown): string | null => (typeof v === 'string' && isValidLocalDate(v) ? v : null);
@@ -113,7 +119,7 @@ function readPayments(v: unknown): PaymentRecord[] {
 }
 
 function readSubscription(v: unknown, i: number, categoryIds: Set<string>, stamp: string): Subscription {
-  const label = isObj(v) && typeof v.name === 'string' && v.name.trim() ? `Item ${i + 1} (“${v.name.trim()}”)` : `Item ${i + 1}`;
+  const label = isObj(v) && typeof v.name === 'string' && v.name.trim() ? `Item ${i + 1} (“${clip(v.name.trim())}”)` : `Item ${i + 1}`;
   if (!isObj(v)) fail(`${label} isn’t a subscription.`);
   const id = str(v.id).trim();
   if (!id) fail(`${label} has no id.`);
@@ -121,7 +127,7 @@ function readSubscription(v: unknown, i: number, categoryIds: Set<string>, stamp
   if (!name) fail(`${label} has no name.`);
   if (typeof v.amount !== 'number' || !Number.isFinite(v.amount) || v.amount <= 0) fail(`${label}: the amount must be a number above 0.`);
   const currency = str(v.currency).trim().toUpperCase();
-  if (!isValidCurrency(currency)) fail(`${label}: “${str(v.currency)}” isn’t a currency code.`);
+  if (!isValidCurrency(currency)) fail(`${label}: “${clip(str(v.currency))}” isn’t a currency code.`);
   const cycle = readCycle(v.cycle, label);
   const anchorDate = str(v.anchorDate);
   if (!isValidLocalDate(anchorDate)) fail(`${label}: the charge date isn’t a valid date.`);
@@ -136,6 +142,12 @@ function readSubscription(v: unknown, i: number, categoryIds: Set<string>, stamp
   const regularAmount = typeof regular === 'number' && Number.isFinite(regular) && regular > 0 ? regular : null;
   const promoEndDate = regularAmount !== null ? dateOrNull(v.promoEndDate) : null;
   const variable = v.variable === true;
+  const trialEndDate = dateOrNull(v.trialEndDate);
+  // The same combinations the edit screen and CSV import refuse.
+  if (trialEndDate && totalPayments !== null) fail(`${label}: a payment plan can’t have a free trial.`);
+  if (variable && totalPayments !== null) fail(`${label}: a payment plan’s payments can’t vary.`);
+  if (promoEndDate && variable) fail(`${label}: a bill that varies can’t have a promo price.`);
+  if (promoEndDate && totalPayments !== null) fail(`${label}: a payment plan can’t have a promo price.`);
   return {
     id,
     name,
@@ -144,7 +156,7 @@ function readSubscription(v: unknown, i: number, categoryIds: Set<string>, stamp
     cycle,
     anchorDate,
     startDate: dateOrNull(v.startDate),
-    trialEndDate: dateOrNull(v.trialEndDate),
+    trialEndDate,
     totalPayments,
     variable,
     actuals: variable ? readActuals(v.actuals) : [],
@@ -153,6 +165,7 @@ function readSubscription(v: unknown, i: number, categoryIds: Set<string>, stamp
     promoEndDate,
     regularAmount: promoEndDate ? regularAmount : null,
     cancelByDate: dateOrNull(v.cancelByDate),
+    deadlineSetAt: typeof v.deadlineSetAt === 'string' && Number.isFinite(Date.parse(v.deadlineSetAt)) ? v.deadlineSetAt : null,
     categoryIds: Array.isArray(v.categoryIds) ? [...new Set(v.categoryIds.filter((c): c is string => typeof c === 'string' && categoryIds.has(c)))] : [],
     notes: str(v.notes),
     manageUrl: str(v.manageUrl),
@@ -186,6 +199,7 @@ export function parseBackup(
   text: string,
   migrations: Record<number, BackupMigration> = BACKUP_MIGRATIONS,
   current: number = BACKUP_VERSION,
+  maxSchema: number = SCHEMA_VERSION,
 ): ParsedBackup {
   if (text.length > MAX_BACKUP_BYTES) return { ok: false, error: 'This file is too big to be a backup from this app. Nothing was changed.' };
   let raw: unknown;
@@ -203,6 +217,15 @@ export function parseBackup(
   }
   if (version > current) {
     return { ok: false, error: `This backup was made by a newer version of the app (backup format ${version}; this app reads up to ${current}). Update the app, then restore it. Nothing was changed.` };
+  }
+  // The database schema the file was written from. Format 1 files from a newer schema could hold
+  // fields this app would silently drop, so they're refused like a newer format.
+  const schema = raw.schemaVersion;
+  if (schema !== undefined && (typeof schema !== 'number' || !Number.isInteger(schema) || schema < 0)) {
+    return { ok: false, error: 'This backup’s data version isn’t readable, so it can’t be restored safely. Nothing was changed.' };
+  }
+  if (typeof schema === 'number' && schema > maxSchema) {
+    return { ok: false, error: `This backup was made by a newer version of the app (data version ${schema}; this app reads up to ${maxSchema}). Update the app, then restore it. Nothing was changed.` };
   }
   let obj: Record<string, unknown> = raw;
   for (let v = version; v < current; v += 1) {
@@ -222,8 +245,8 @@ export function parseBackup(
       if (!isObj(c) || !str(c.id).trim() || !str(c.name).trim()) fail(`Category ${i + 1} needs an id and a name.`);
       const id = str(c.id).trim();
       const name = str(c.name).trim();
-      if (categories.some((x) => x.id === id)) fail(`Category “${name}” appears twice (same id).`);
-      if (names.has(name.toLowerCase())) fail(`There are two categories named “${name}”.`);
+      if (categories.some((x) => x.id === id)) fail(`Category “${clip(name)}” appears twice (same id).`);
+      if (names.has(name.toLowerCase())) fail(`There are two categories named “${clip(name)}”.`);
       names.add(name.toLowerCase());
       categories.push({ id, name });
     }
@@ -231,7 +254,7 @@ export function parseBackup(
     const subscriptions: Subscription[] = [];
     for (const [i, s] of (data.subscriptions as unknown[]).entries()) {
       const sub = readSubscription(s, i, catIds, exportedAt);
-      if (subscriptions.some((x) => x.id === sub.id)) fail(`“${sub.name}” appears twice (same id), so the file looks damaged.`);
+      if (subscriptions.some((x) => x.id === sub.id)) fail(`“${clip(sub.name)}” appears twice (same id), so the file looks damaged.`);
       subscriptions.push(sub);
     }
     const schemaVersion = typeof obj.schemaVersion === 'number' ? obj.schemaVersion : 0;

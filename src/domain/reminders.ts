@@ -41,9 +41,11 @@ export const TRIAL_LEAD_DAYS = [3, 1];
 export const CANCEL_BY_LEAD_DAYS = [3, 1];
 /** Promo-end reminders: a week before (time to call and ask for a better deal) and the day before. */
 export const PROMO_LEAD_DAYS = [7, 1];
+/** Deadline reminders firing within this many days outrank routine ones under the cap. */
+export const DEADLINE_PRIORITY_DAYS = 60;
 /**
  * T1: a trial saved too late for its 1-day reminder still gets one notice, this long after the
- * save (as long as the trial hasn't ended). Anchored to updatedAt so the id stays stable across syncs.
+ * save (as long as the trial hasn't ended). Anchored to deadlineSetAt (when the deadline was set) so the id stays stable across syncs.
  */
 export const TRIAL_CATCH_UP_MS = 60_000;
 
@@ -178,7 +180,8 @@ function catchUp(
   title: (days: number) => string,
   body: string,
 ): PlannedReminder | null {
-  const saved = Date.parse(sub.updatedAt);
+  // Keyed on when the deadline was set, so marking paid or editing other fields doesn't resend it.
+  const saved = Date.parse(sub.deadlineSetAt ?? '');
   if (!Number.isFinite(saved)) return null;
   const lastLead = Math.max(...scheduled.map((r) => r.fireAt.getTime()));
   // Only when no lead reminder could have fired after the save, and the deadline day hasn't passed.
@@ -205,6 +208,21 @@ function deadlineReminders(
   if (ahead.length) return ahead;
   const late = catchUp(kind, sub, end, scheduled, title, body);
   return late && late.fireAt.getTime() > now.getTime() ? [late] : [];
+}
+
+/**
+ * The deadlineSetAt to save: `now` when a deadline (trial end, cancel-by, promo end) is new or
+ * changed, or reminders for the item were just turned back on (un-cancelled, reminders on), else the
+ * previous stamp. Null when the item has no deadline. Marking paid never calls this.
+ */
+export function nextDeadlineStamp(prev: Subscription | null | undefined, next: Subscription, now: string): string | null {
+  const key = (s: Subscription) => [hasTrial(s) ? s.trialEndDate : null, s.cancelByDate ?? null, hasPromo(s) ? s.promoEndDate : null];
+  const k = key(next);
+  if (k.every((d) => !d)) return null;
+  if (!prev) return now;
+  const changed = key(prev).some((d, i) => d !== k[i]);
+  const reenabled = (prev.cancelled && !next.cancelled) || (!prev.remindersEnabled && next.remindersEnabled);
+  return changed || reenabled ? now : (prev.deadlineSetAt ?? null);
 }
 
 export function hasCancelBy(sub: Subscription): boolean {
@@ -282,8 +300,9 @@ const soonest = (a: PlannedReminder, b: PlannedReminder) =>
 
 /**
  * Selection across all subscriptions, capped at the budget, so the app never asks iOS for more
- * than 64 pending notifications. Deadlines (cancel-by, trial, promo end) are taken first, soonest
- * first, then routine renewals and payments fill what's left, soonest first. The result is in
+ * than 64 pending notifications. Deadlines (cancel-by, trial, promo end) firing within the next
+ * DEADLINE_PRIORITY_DAYS are taken first, soonest first, then everything else (renewals, payments,
+ * later deadlines) fills what's left, soonest first. The result is in
  * firing order. Ties break on id so it is deterministic.
  */
 export function planReminders(
@@ -294,8 +313,12 @@ export function planReminders(
 ): PlannedReminder[] {
   const all = subs.flatMap((s) => remindersFor(s, settings, now));
   const cap = Math.max(0, Math.min(budget, IOS_PENDING_LIMIT - TEST_SLOTS));
-  const deadlines = all.filter((r) => isDeadline(r.kind)).sort(soonest);
-  const routine = all.filter((r) => !isDeadline(r.kind)).sort(soonest);
+  // Only deadlines firing within the horizon jump the queue; later ones compete as routine, so a
+  // pile of far-off deadlines can't push out next week's renewals.
+  const horizon = now.getTime() + DEADLINE_PRIORITY_DAYS * 86_400_000;
+  const urgent = (r: PlannedReminder) => isDeadline(r.kind) && r.fireAt.getTime() <= horizon;
+  const deadlines = all.filter(urgent).sort(soonest);
+  const routine = all.filter((r) => !urgent(r)).sort(soonest);
   return [...deadlines, ...routine].slice(0, cap).sort(soonest);
 }
 

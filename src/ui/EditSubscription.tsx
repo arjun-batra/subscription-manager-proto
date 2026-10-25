@@ -31,7 +31,7 @@ import {
   planStatus,
   trialDaysLeft,
 } from '../domain/schedule';
-import { trialLeadsPassed } from '../domain/reminders';
+import { nextDeadlineStamp, trialLeadsPassed } from '../domain/reminders';
 import type { Cycle, Subscription, Weekday, WeekdayRule } from '../domain/types';
 import { BrandLogo } from './BrandLogo';
 import { Button, Card, Chip, Field, Row, SectionHeader } from './components';
@@ -243,6 +243,7 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
     }
     // Paid marks stay only on dates that are still charge dates of the edited schedule.
     draft.payments = keepPayments(draft).payments;
+    draft.deadlineSetAt = nextDeadlineStamp(existing, draft, now);
     setErrors({});
     setSaving(true);
     try {
@@ -476,7 +477,14 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
             onChange={setDate}
           />
           {errors.date ? <Text style={{ color: p.danger, paddingHorizontal: 16, paddingBottom: 8 }}>{errors.date}</Text> : null}
-          {isTrialForm && reminders && !cancelled && isValidLocalDate(date) && trialLeadsPassed(date, store.settings, new Date()) ? (
+          {isTrialForm &&
+          reminders &&
+          !cancelled &&
+          !cancelByOn &&
+          // Only a new or moved trial end (or reminders just turned back on) gets the catch-up.
+          (!existing || existing.trialEndDate !== date || existing.cancelled || !existing.remindersEnabled) &&
+          isValidLocalDate(date) &&
+          trialLeadsPassed(date, store.settings, new Date()) ? (
             <Text style={{ color: p.text, fontSize: 14, paddingHorizontal: 16, paddingBottom: 8 }}>
               It’s past the usual reminder time for this trial, so you’ll get one reminder about a minute after you save.
             </Text>

@@ -2,7 +2,7 @@
 import { previewImport, toCsv } from './csv';
 import { sub, settings } from './fixtures';
 import { keepPayments, markNextPaid, undoablePayment, unmarkPaid } from './payments';
-import { nextReminder, planReminders, remindersFor } from './reminders';
+import { nextDeadlineStamp, nextReminder, planReminders, remindersFor } from './reminders';
 import { amountForCharge, isCompleted, nextDue, planStatus } from './schedule';
 import { computeMonthTotals } from './totals';
 import type { Subscription } from './types';
@@ -210,5 +210,54 @@ describe('reminders skip charges marked paid', () => {
     const after = planReminders([kept], settings(), now);
     expect(after.map((r) => r.kind)).toEqual(['renewal']);
     expect(after[0].chargeDate).toBe('2026-12-05');
+  });
+});
+
+describe('marking paid never resends a deadline catch-up (keyed on deadlineSetAt, not updatedAt)', () => {
+  const s0 = settings();
+  // Cancel-by tomorrow, set this morning after both lead reminders' times: one catch-up a minute later.
+  const setAt = new Date(2026, 9, 25, 9, 30).toISOString();
+  const gym = sub({ id: 'g', name: 'Gym', anchorDate: '2026-10-25', cancelByDate: '2026-10-26', updatedAt: setAt, deadlineSetAt: setAt });
+
+  it('the catch-up fires once after the deadline is set', () => {
+    const rs = remindersFor(gym, s0, new Date(2026, 9, 25, 9, 30, 30));
+    expect(rs.filter((r) => r.kind === 'cancelBy').map((r) => r.title)).toEqual(['Cancel Gym by tomorrow']);
+  });
+
+  it('marking or undoing a payment later the same day schedules no new cancel-by reminder', () => {
+    const later = new Date(2026, 9, 25, 15, 0);
+    const paid = markNextPaid(gym, '2026-10-25', { now: later.toISOString() })!.sub;
+    expect(paid.updatedAt).toBe(later.toISOString());
+    expect(paid.deadlineSetAt).toBe(setAt);
+    expect(remindersFor(paid, s0, new Date(later.getTime() + 1_000)).filter((r) => r.kind === 'cancelBy')).toEqual([]);
+    const undone = unmarkPaid(paid, '2026-10-25', new Date(2026, 9, 25, 15, 5).toISOString());
+    expect(remindersFor(undone, s0, new Date(2026, 9, 25, 15, 5, 1)).filter((r) => r.kind === 'cancelBy')).toEqual([]);
+  });
+
+  it('the same for a trial ending tomorrow (the PR #4 T1 case): only a changed trial end resends', () => {
+    const t = sub({ id: 't', name: 'Crave', trialEndDate: '2026-10-26', anchorDate: '2026-10-26', updatedAt: setAt, deadlineSetAt: setAt });
+    const edited = { ...t, notes: 'family', updatedAt: new Date(2026, 9, 25, 15).toISOString() };
+    const stamped = { ...edited, deadlineSetAt: nextDeadlineStamp(t, edited, edited.updatedAt) };
+    expect(stamped.deadlineSetAt).toBe(setAt);
+    expect(remindersFor(stamped, s0, new Date(2026, 9, 25, 15, 0, 1)).filter((r) => r.kind === 'trial')).toEqual([]);
+  });
+});
+
+describe('nextDeadlineStamp', () => {
+  const now = '2026-10-25T19:00:00.000Z';
+  const old = '2026-10-01T12:00:00.000Z';
+  const base = sub({ cancelByDate: '2026-11-20', deadlineSetAt: old });
+  it.each<[string, Subscription | null, Subscription, string | null]>([
+    ['a new item with a deadline', null, base, now],
+    ['a new item without one', null, sub({ deadlineSetAt: null }), null],
+    ['an unrelated edit', base, { ...base, notes: 'x', amount: 12 }, old],
+    ['a moved cancel-by date', base, { ...base, cancelByDate: '2026-11-21' }, now],
+    ['a new trial end', base, { ...base, trialEndDate: '2026-11-05', anchorDate: '2026-11-05' }, now],
+    ['a new promo end', base, { ...base, promoEndDate: '2027-01-05', regularAmount: 20 }, now],
+    ['un-cancelling', { ...base, cancelled: true }, base, now],
+    ['turning reminders back on', { ...base, remindersEnabled: false }, base, now],
+    ['removing the last deadline', base, { ...base, cancelByDate: null }, null],
+  ])('%s', (_label, prev, next, want) => {
+    expect(nextDeadlineStamp(prev, next, now)).toBe(want);
   });
 });

@@ -4,7 +4,7 @@ import * as Sharing from 'expo-sharing';
 import { useState } from 'react';
 import { Alert, ScrollView, Text, TextInput, View } from 'react-native';
 
-import { backupFileName, backupJson, makeBackup, parseBackup, type ParsedBackup } from '../domain/backup';
+import { backupFileName, backupJson, makeBackup, MAX_BACKUP_BYTES, parseBackup, type ParsedBackup } from '../domain/backup';
 import { CSV_TEMPLATE, previewImport, toCsv, type PreviewRow } from '../domain/csv';
 import { toLocalDate } from '../domain/dates';
 import { SCHEMA_VERSION } from '../data/sql';
@@ -15,12 +15,48 @@ import { Card, Chip, Field, Row, SectionHeader } from './components';
 import { useStore } from './store';
 import { usePalette } from './theme';
 
+/** Deletes a file in the app's cache, ignoring errors (it may already be gone). */
+function removeCached(file: File) {
+  try {
+    if (file.uri.startsWith(Paths.cache.uri) && file.exists) file.delete();
+  } catch {
+    // nothing to clean up
+  }
+}
+
+/**
+ * Writes the text to a cache file, opens the share sheet, and deletes the file once the sheet is
+ * closed (Files and AirDrop have their own copy by then), so no plain-text copy is left behind.
+ */
 async function shareText(filename: string, text: string, type: { mimeType: string; UTI: string } = { mimeType: 'text/csv', UTI: 'public.comma-separated-values-text' }) {
   const file = new File(Paths.cache, filename);
   if (file.exists) file.delete();
   file.create();
-  await file.write(text);
-  await Sharing.shareAsync(file.uri, { ...type, dialogTitle: filename });
+  try {
+    await file.write(text);
+    await Sharing.shareAsync(file.uri, { ...type, dialogTitle: filename });
+  } finally {
+    removeCached(file);
+  }
+}
+
+/**
+ * Reads a picked file's text, refusing anything bigger than `maxBytes` before reading it, then
+ * deletes the picker's copy in the cache. Returns an error message instead of throwing.
+ */
+async function readPicked(asset: DocumentPicker.DocumentPickerAsset, maxBytes: number): Promise<{ text: string } | { error: string }> {
+  const file = new File(asset.uri);
+  try {
+    const size = asset.size ?? file.size;
+    if (typeof size === 'number' && size > maxBytes) {
+      return { error: `This file is ${(size / 1024 / 1024).toFixed(1)} MB, too big for this app (the limit is ${Math.round(maxBytes / 1024 / 1024)} MB). Nothing was changed.` };
+    }
+    return { text: await file.text() };
+  } catch (e) {
+    return { error: `The file couldn’t be read. Nothing was changed. (${String(e).slice(0, 200)})` };
+  } finally {
+    removeCached(file);
+  }
 }
 
 export type RestoreRequest = Extract<ParsedBackup, { ok: true }>;
@@ -66,8 +102,9 @@ export function SettingsScreen({ onPreview, onRestore }: { onPreview: (rows: Pre
       copyToCacheDirectory: true,
     });
     if (res.canceled || !res.assets?.[0]) return;
-    const text = await new File(res.assets[0].uri).text();
-    const preview = previewImport(text, subscriptions, store.today);
+    const read = await readPicked(res.assets[0], MAX_BACKUP_BYTES);
+    if ('error' in read) return Alert.alert('Can’t import this file', read.error);
+    const preview = previewImport(read.text, subscriptions, store.today);
     if (!preview.ok) return Alert.alert('Can’t import this file', preview.error);
     if (!preview.rows.length) return Alert.alert('Nothing to import', 'The file has a header row but no data rows.');
     onPreview(preview.rows);
@@ -82,13 +119,9 @@ export function SettingsScreen({ onPreview, onRestore }: { onPreview: (rows: Pre
   async function pickBackup() {
     const res = await DocumentPicker.getDocumentAsync({ type: ['application/json', 'public.json', 'text/plain'], copyToCacheDirectory: true });
     if (res.canceled || !res.assets?.[0]) return;
-    let text: string;
-    try {
-      text = await new File(res.assets[0].uri).text();
-    } catch (e) {
-      return Alert.alert('Can’t read this file', `Nothing was changed. ${String(e)}`);
-    }
-    const parsed = parseBackup(text);
+    const read = await readPicked(res.assets[0], MAX_BACKUP_BYTES);
+    if ('error' in read) return Alert.alert('Can’t read this file', read.error);
+    const parsed = parseBackup(read.text);
     if (!parsed.ok) return Alert.alert('Can’t restore this file', parsed.error);
     onRestore(parsed);
   }
@@ -221,7 +254,8 @@ export function SettingsScreen({ onPreview, onRestore }: { onPreview: (rows: Pre
       </Card>
       <Text style={{ color: p.secondaryText, fontSize: 13, marginHorizontal: 20, marginTop: 8 }}>
         Your data is stored only on this phone and in your own device backups. This app has no account, no analytics, and
-        makes no network calls.
+        makes no network calls. Backup and CSV files you export are not encrypted: anyone with the file can read your
+        items, notes and links, so keep them somewhere private. The app deletes its own temporary copy after sharing.
       </Text>
     </ScrollView>
   );

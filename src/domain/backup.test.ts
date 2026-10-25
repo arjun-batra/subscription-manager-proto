@@ -1,6 +1,7 @@
 import { BACKUP_FORMAT, BACKUP_VERSION, backupFileName, backupJson, describeBackup, makeBackup, MAX_BACKUP_BYTES, parseBackup } from './backup';
 import { sub, settings } from './fixtures';
 import type { BackupMigration } from './backup';
+import { SCHEMA_VERSION } from '../data/sql';
 
 const data = () => ({
   categories: [
@@ -125,5 +126,42 @@ describe('backup file', () => {
 
   it('refuses a file over the size limit without parsing it', () => {
     expect(err(' '.repeat(MAX_BACKUP_BYTES + 1))).toContain('too big');
+  });
+});
+
+describe('backup checks added in review', () => {
+  it('refuses a file written by a newer database schema, or with an unreadable one', () => {
+    expect(err(text({ schemaVersion: 7 }), undefined, undefined, 6)).toBe(
+      'This backup was made by a newer version of the app (data version 7; this app reads up to 6). Update the app, then restore it. Nothing was changed.',
+    );
+    expect(err(text({ schemaVersion: '6' }))).toContain('data version isn’t readable');
+    expect(err(text({ schemaVersion: 1.5 }))).toContain('data version isn’t readable');
+    expect(parseBackup(text({ schemaVersion: 6 }), undefined, undefined, 6).ok).toBe(true);
+    expect(parseBackup(text({ schemaVersion: SCHEMA_VERSION })).ok).toBe(true);
+    expect(err(text({ schemaVersion: SCHEMA_VERSION + 1 }))).toContain('newer version of the app');
+  });
+
+  it('cuts long names and values in error messages', () => {
+    const raw = JSON.parse(text());
+    raw.data.subscriptions[0].name = 'N'.repeat(100_000);
+    raw.data.subscriptions[0].currency = 'C'.repeat(5_000);
+    const e = err(JSON.stringify(raw));
+    expect(e.length).toBeLessThan(200);
+    expect(e).toBe(`Item 1 (“${'N'.repeat(39)}…”): “${'C'.repeat(39)}…” isn’t a currency code. Nothing was changed.`);
+    const dup = JSON.parse(text());
+    dup.data.categories[0].name = 'X'.repeat(500);
+    dup.data.categories[1].name = 'x'.repeat(500);
+    expect(err(JSON.stringify(dup)).length).toBeLessThan(120);
+  });
+
+  it.each<[string, Record<string, unknown>, string]>([
+    ['trial + plan', { trialEndDate: '2026-11-05', totalPayments: 6, startDate: '2026-11-05' }, 'a payment plan can’t have a free trial.'],
+    ['variable + plan', { variable: true, totalPayments: 6, startDate: '2026-11-05' }, 'a payment plan’s payments can’t vary.'],
+    ['promo + variable', { variable: true, promoEndDate: '2027-01-05', regularAmount: 20 }, 'a bill that varies can’t have a promo price.'],
+    ['promo + plan', { promoEndDate: '2027-01-05', regularAmount: 20, totalPayments: 6, startDate: '2026-11-05' }, 'a payment plan can’t have a promo price.'],
+  ])('refuses %s, like CSV import and the edit screen', (_label, fields, msg) => {
+    const raw = JSON.parse(text());
+    Object.assign(raw.data.subscriptions[0], fields);
+    expect(err(JSON.stringify(raw))).toBe(`Item 1 (“Netflix”): ${msg} Nothing was changed.`);
   });
 });

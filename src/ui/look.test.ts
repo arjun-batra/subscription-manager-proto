@@ -129,6 +129,10 @@ describe('brand marks', () => {
     ['Crave Cookies', null],
     ['Slack Line Gym', null],
     ['Notion Press', null],
+    ['Prime Home', null],
+    ['Prime Phone', null],
+    ['Freedom Phone', null],
+    ['Shaw Phone', null],
   ])('ambiguous one-word alias, other business: %s -> no brand', (name, slug) => {
     expect(matchBrand(name)?.slug ?? null).toBe(slug);
   });
@@ -163,6 +167,11 @@ describe('brand marks', () => {
     ['Netflix Standard with Ads', 'netflix'],
     ['Rogers Ignite', 'rogers'],
     ['Sonnet Car Insurance', 'sonnet'],
+    ['Crave Total', 'crave'],
+    ['Crave', 'crave'],
+    ['Slack Business+', 'slack'],
+    ['Slack Pro', 'slack'],
+    ['Shaw Home Internet', 'shaw'],
   ])('true positives still match: %s -> %s', (name, slug) => {
     expect(matchBrand(name)?.slug ?? null).toBe(slug);
   });

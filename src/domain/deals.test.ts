@@ -91,16 +91,38 @@ describe('cancel-by deadlines', () => {
     expect(rs[2].chargeDate).toBe('2026-12-30');
   });
 
-  it('deadlines outrank routine renewals when the 60-reminder cap is reached', () => {
-    const routine = Array.from({ length: 70 }, (_, i) => sub({ id: `w${i}`, name: `Weekly ${i}`, cycle: { unit: 'week', every: 1 }, anchorDate: '2026-10-28' }));
-    const far = [gym({ cancelByDate: '2027-06-01', anchorDate: '2027-06-05' }), rogers({ promoEndDate: '2027-09-15' })];
-    const plan = planReminders([...routine, ...far], settings(), now);
+  const weekly = (n: number) =>
+    Array.from({ length: n }, (_, i) => sub({ id: `w${i}`, name: `Weekly ${i}`, cycle: { unit: 'week', every: 1 }, anchorDate: '2026-10-28' }));
+
+  it('deadlines in the next 60 days outrank routine renewals when the 60-reminder cap is reached', () => {
+    const soon = [gym({ cancelByDate: '2026-12-10', anchorDate: '2026-12-15' }), rogers({ promoEndDate: '2026-12-20' })];
+    const plan = planReminders([...weekly(70), ...soon], settings(), now);
     expect(plan).toHaveLength(60);
     expect(plan.filter((r) => r.kind === 'cancelBy')).toHaveLength(2);
     expect(plan.filter((r) => r.kind === 'promoEnd')).toHaveLength(2);
     expect(plan.filter((r) => r.kind === 'renewal')).toHaveLength(56);
     const times = plan.map((r) => r.fireAt.getTime());
     expect([...times].sort((a, b) => a - b)).toEqual(times);
+  });
+
+  it('far-off deadlines compete as routine: 31 cancel-by dates 11 months out vs 70 renewals in 3 days', () => {
+    const far = Array.from({ length: 31 }, (_, i) => gym({ id: `g${i}`, name: `Gym ${i}`, cancelByDate: '2027-09-25', anchorDate: '2027-10-01' }));
+    const plan = planReminders([...weekly(70), ...far], settings(), now);
+    expect(plan).toHaveLength(60);
+    expect(plan.filter((r) => r.kind === 'renewal')).toHaveLength(60);
+    expect(plan.every((r) => r.chargeDate === '2026-10-28')).toBe(true);
+    // With room to spare, the far deadlines are still scheduled.
+    const roomy = planReminders([...weekly(5), ...far.slice(0, 10)], settings(), now);
+    expect(roomy.filter((r) => r.kind === 'cancelBy')).toHaveLength(20);
+  });
+
+  it('the horizon is measured on the reminder’s fire time', () => {
+    // Cancel-by Dec 26: its 3-day reminder (Dec 23) fires within 60 days of Oct 25, its 1-day one (Dec 25) doesn't.
+    const edge = gym({ id: 'e', cancelByDate: '2026-12-26', anchorDate: '2027-01-01' });
+    const late = gym({ id: 'l', cancelByDate: '2026-12-28', anchorDate: '2027-01-01' });
+    const plan = planReminders([...weekly(70), edge, late], settings(), now);
+    expect(plan.filter((r) => r.subId === 'e').map((r) => r.fireAt)).toEqual([new Date(2026, 11, 23, 9, 0)]);
+    expect(plan.filter((r) => r.subId === 'l')).toEqual([]);
   });
 });
 

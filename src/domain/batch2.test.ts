@@ -66,14 +66,14 @@ describe('T1: a trial saved too late for its 1-day reminder', () => {
 
   it('says "ends today" when saved on the end day', () => {
     const onDay = new Date(2026, 10, 15, 8, 0);
-    const s = { ...late, updatedAt: onDay.toISOString() };
+    const s = { ...late, updatedAt: onDay.toISOString(), deadlineSetAt: onDay.toISOString() };
     expect(remindersFor(s, settings(), new Date(onDay.getTime() + 1_000))[0].title).toBe('Max free trial ends today');
   });
 
   it('does nothing extra when the usual reminders were still ahead at save time, or the trial is over', () => {
-    const early = { ...late, updatedAt: new Date(2026, 10, 1, 12).toISOString() };
+    const early = { ...late, updatedAt: new Date(2026, 10, 1, 12).toISOString(), deadlineSetAt: new Date(2026, 10, 1, 12).toISOString() };
     expect(remindersFor(early, settings(), new Date(2026, 10, 14, 20, 1)).map((r) => r.kind)).toEqual(['renewal']);
-    const over = { ...late, updatedAt: new Date(2026, 10, 16, 9).toISOString() };
+    const over = { ...late, updatedAt: new Date(2026, 10, 16, 9).toISOString(), deadlineSetAt: new Date(2026, 10, 16, 9).toISOString() };
     expect(remindersFor(over, settings(), new Date(2026, 10, 16, 9, 0, 1)).map((r) => r.kind)).toEqual(['renewal']);
     expect(remindersFor({ ...late, remindersEnabled: false }, settings(), new Date(saved.getTime() + 1_000))).toEqual([]);
   });

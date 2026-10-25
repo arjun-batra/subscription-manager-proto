@@ -30,7 +30,7 @@ export function normalizeName(name: string): string {
 export const PLAN_WORDS = new Set(
   (
     'premium plus family membership member subscription sub monthly month annual annually yearly year plan pro basic ' +
-    'standard student individual duo ultimate unlimited internet mobile wireless phone home tv video music account ' +
+    'standard student individual duo ultimate unlimited internet mobile wireless tv video music account ' +
     'ad ads free with no essential essentials deluxe extra trial gift card pass'
   ).split(' '),
 );
@@ -47,16 +47,16 @@ export const AMBIGUOUS_ALIASES: Record<string, string[]> = {
   kindle: [],
   copilot: [],
   nitro: [],
-  freedom: [],
-  shaw: [],
+  freedom: ['home'],
+  shaw: ['home'],
   bell: ['canada', 'mobility', 'fibe'],
   fibe: [],
   medium: [],
   notion: ['ai', 'calendar', 'mail'],
   zoom: ['workplace', 'one', 'meetings'],
-  slack: [],
+  slack: ['business', 'enterprise'],
   sonnet: ['insurance', 'car', 'auto'],
-  crave: [],
+  crave: ['total'],
   presto: [],
   wonderland: ['season'],
   proton: ['drive', 'pass', 'mail', 'vpn'],
@@ -75,7 +75,8 @@ function aliasMatches(n: string, a: string): boolean {
   return n
     .slice(a.length + 1)
     .split(' ')
-    .every((w) => PLAN_WORDS.has(w) || extra.includes(w) || /^\+$/.test(w));
+    .map((w) => w.replace(/\+$/, '')) // "Business+" reads as "business"
+    .every((w) => !w || PLAN_WORDS.has(w) || extra.includes(w));
 }
 
 /**

@@ -114,12 +114,14 @@ export async function migrate(db: SqlDb): Promise<void> {
   }
   if (version < 6) {
     // Marked payments (JSON), promo end + regular price, cancel-by deadline. All nullable, so
-    // existing rows have no payments, no promo and no deadline. Four ALTERs and the bump, one step.
+    // existing rows have no payments, no promo and no deadline; deadline_set_at keys catch-up
+    // reminders. Five ALTERs and the bump, one step.
     await db.withExclusiveTransactionAsync(async (txn) => {
       await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN payments TEXT');
       await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN promo_end_date TEXT');
       await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN regular_amount REAL');
       await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN cancel_by_date TEXT');
+      await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN deadline_set_at TEXT');
       await txn.execAsync('PRAGMA user_version = 6');
     });
   }
@@ -194,6 +196,7 @@ interface SubRow {
   promo_end_date: string | null;
   regular_amount: number | null;
   cancel_by_date: string | null;
+  deadline_set_at: string | null;
   notes: string;
   manage_url: string;
   reminders_enabled: number;
@@ -243,6 +246,7 @@ export async function loadSnapshot(db: SqlExec): Promise<Snapshot> {
       promoEndDate: r.promo_end_date ?? null,
       regularAmount: r.regular_amount ?? null,
       cancelByDate: r.cancel_by_date ?? null,
+      deadlineSetAt: r.deadline_set_at ?? null,
       categoryIds: byId.get(r.id) ?? [],
       notes: r.notes,
       manageUrl: r.manage_url,
@@ -260,16 +264,16 @@ export async function writeSub(db: SqlExec, s: Subscription): Promise<void> {
   await db.runAsync(
     `INSERT INTO subscriptions (id, name, amount, currency, cycle_unit, cycle_every, anchor_date, start_date,
        trial_end_date, total_payments, cycle_weekday_nth, cycle_weekday, variable, actuals, logo,
-       payments, promo_end_date, regular_amount, cancel_by_date,
+       payments, promo_end_date, regular_amount, cancel_by_date, deadline_set_at,
        notes, manage_url, reminders_enabled, cancelled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET name = excluded.name, amount = excluded.amount, currency = excluded.currency,
        cycle_unit = excluded.cycle_unit, cycle_every = excluded.cycle_every, anchor_date = excluded.anchor_date,
        start_date = excluded.start_date, trial_end_date = excluded.trial_end_date,
        total_payments = excluded.total_payments, cycle_weekday_nth = excluded.cycle_weekday_nth,
        cycle_weekday = excluded.cycle_weekday, variable = excluded.variable, actuals = excluded.actuals, logo = excluded.logo,
        payments = excluded.payments, promo_end_date = excluded.promo_end_date, regular_amount = excluded.regular_amount,
-       cancel_by_date = excluded.cancel_by_date, notes = excluded.notes, manage_url = excluded.manage_url,
+       cancel_by_date = excluded.cancel_by_date, deadline_set_at = excluded.deadline_set_at, notes = excluded.notes, manage_url = excluded.manage_url,
        reminders_enabled = excluded.reminders_enabled, cancelled = excluded.cancelled, updated_at = excluded.updated_at`,
     s.id,
     s.name,
@@ -290,6 +294,7 @@ export async function writeSub(db: SqlExec, s: Subscription): Promise<void> {
     s.promoEndDate ?? null,
     s.regularAmount ?? null,
     s.cancelByDate ?? null,
+    s.deadlineSetAt ?? null,
     s.notes,
     s.manageUrl,
     s.remindersEnabled ? 1 : 0,
@@ -351,6 +356,7 @@ export async function importDraftsInto(
         promoEndDate: d.promoEndDate,
         regularAmount: d.regularAmount,
         cancelByDate: d.cancelByDate,
+        deadlineSetAt: d.trialEndDate || d.cancelByDate || d.promoEndDate ? stamp : null,
         categoryIds,
         notes: d.notes,
         manageUrl: d.manageUrl,

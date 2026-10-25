@@ -39,19 +39,21 @@ and [docs/decisions.md](docs/decisions.md) for the choices made.
   following charge and that charge's reminder is cancelled. An **Undo** banner shows for a few seconds, and the menu
   has **Undo Paid** afterwards. For bills that vary you can type what you paid (leave it blank to use the estimate).
   Marking a plan's last payment early completes the plan.
-- **Paid in <month>**: the home card shows what has gone out this calendar month in CA$ (past charges plus anything
-  you marked paid this month, early payments included; actual amounts for bills that vary, $0 for trials until
-  they end, each plan instalment). It sits next to "Paid so far", which counts this month's charges by due date.
+- **Paid in <month>**: the home card shows what has gone out this calendar month in your home currency (past charges plus
+  anything you marked paid this month, early payments included; actual amounts for bills that vary, $0 for trials
+  until they end, each plan instalment). It sits next to "Paid so far", which counts this month's charges by due date.
 - **Promo prices and cancel-by dates**: under **Deals and deadlines** on the edit screen, set **Promo price ends**
   (the regular price and the date it starts, e.g. Rogers after 12 months) and/or **Cancel by** (a trial or anything
   with a cancellation deadline). Totals use the regular price from that date, the card shows "After the promo
   ends", Home lists both in a **Deadlines** section, and reminders fire 7 and 1 days before a promo ends and 3 and 1
-  days before a cancel-by date. These deadline reminders are kept first when the 60-reminder limit is reached.
+  days before a cancel-by date. When the 60-reminder limit is reached, deadline reminders due in the next 60 days are kept first;
+  later ones take their turn with the routine reminders.
 - **Backup and restore**: Settings → **Back Up All Data** saves everything (items, categories, logos, logged
   amounts, paid marks, settings) as one `.json` file through the share sheet (Save to Files, AirDrop). **Restore
   from Backup…** picks a file, shows what's in it and asks before replacing all current data in one step. Files
-  from newer app versions, damaged files and non-backups are refused with a reason, and nothing is changed. No
-  account or server is involved.
+  from newer app versions, damaged files, files over 10 MB and non-backups are refused with a reason, and nothing is
+  changed. No account or server is involved. The file isn't encrypted (it holds your notes and links), so keep it
+  somewhere private; the app deletes its own temporary copy once the share sheet or restore is done.
 - **Category filter**: chips across the top of Home (All, then each category). Picking one shows only that
   category's subscriptions, trials and plans, and the totals card shows that category's totals. The choice is kept
   while the app is open and goes back to All the next time it starts.
@@ -199,7 +201,9 @@ Header row, any column order, case-insensitive, extra columns are ignored:
 - `cancel by`: optional `YYYY-MM-DD` deadline to cancel (reminders 3 days and 1 day before)
 - `paid`: charges marked paid, as `charge@paidOn=amount` separated by `;`, for example
   `2026-11-05@2026-10-25=16.49`. Each charge must be on the schedule; the paid-on date can't be in the future
-- For a complete copy including settings, use **Back Up All Data** (JSON) instead of CSV
+- The CSV isn't a complete copy: it has no settings or exchange rates, and doesn't keep whether a paid mark also
+  logged the amount (undoing it after a CSV import leaves the logged amount). For an exact copy use **Back Up All
+  Data** (JSON)
 - Files without the newer columns (older exports) still import: no trial, no plan, a fixed amount
 - Export puts `'` in front of any cell starting with `=`, `+`, `-` or `@` so spreadsheets don't run it as a
   formula. Import removes it again.

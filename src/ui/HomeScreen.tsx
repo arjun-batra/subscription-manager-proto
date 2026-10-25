@@ -33,6 +33,7 @@ import { Alert, Linking, Platform, Pressable, ScrollView, Text, useColorScheme, 
 import { describeCycle, shortDate } from '../domain/dates';
 import { formatMoney } from '../domain/money';
 import { markNextPaid, undoablePayment, unmarkPaid } from '../domain/payments';
+import { nextDeadlineStamp } from '../domain/reminders';
 import { isCompleted, isPlan, isVariable, nextCharge, nextDue, planStatus, withActual } from '../domain/schedule';
 import { categoryIdsOf, computeMonthTotals, computeTotals, filterByCategory } from '../domain/totals';
 import { UNCATEGORIZED_ID, type Subscription } from '../domain/types';
@@ -42,6 +43,7 @@ import { CategoryFilter } from './CategoryFilter';
 import { Button, Card, Row, SectionHeader } from './components';
 import { donutSlices, filterOptions } from './look';
 import { amountLabel, chargeToLog, deadlineRows, parseAmount, upcomingRow, type RowModel } from './rows';
+import { SWIPE_COLORS } from './palette';
 import { useStore } from './store';
 import { TotalsCard } from './TotalsCard';
 import { usePalette } from './theme';
@@ -240,7 +242,9 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
   }
 
   async function setCancelled(s: Subscription, value: boolean) {
-    await store.saveSubscription({ ...s, cancelled: value, updatedAt: new Date().toISOString() });
+    const now = new Date().toISOString();
+    const next = { ...s, cancelled: value, updatedAt: now };
+    await store.saveSubscription({ ...next, deadlineSetAt: nextDeadlineStamp(s, next, now) });
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
   }
 
@@ -376,19 +380,19 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
           </ContextMenu.Trigger>
         </ContextMenu>
         <SwipeActions.Actions edge="trailing" allowsFullSwipe={false}>
-          <UIButton label="Delete" systemImage="trash" role="destructive" onPress={() => confirmDelete(s)} />
+          <UIButton label="Delete" systemImage="trash" role="destructive" onPress={() => confirmDelete(s)} modifiers={[tint(SWIPE_COLORS.delete)]} />
           <UIButton
             label={s.cancelled ? 'Restore' : 'Cancel'}
             systemImage={s.cancelled ? 'arrow.uturn.backward' : 'xmark.circle'}
             onPress={() => setCancelled(s, !s.cancelled)}
-            modifiers={[tint('orange')]}
+            modifiers={[tint(SWIPE_COLORS.cancel)]}
           />
         </SwipeActions.Actions>
         {paidLabel || (isVariable(s) && !s.cancelled) ? (
           <SwipeActions.Actions edge="leading">
-            {paidLabel ? <UIButton label="Paid" systemImage="checkmark.circle" onPress={() => markPaid(s)} modifiers={[tint('green')]} /> : null}
+            {paidLabel ? <UIButton label="Paid" systemImage="checkmark.circle" onPress={() => markPaid(s)} modifiers={[tint(SWIPE_COLORS.paid)]} /> : null}
             {isVariable(s) && !s.cancelled ? (
-              <UIButton label="Log" systemImage="square.and.pencil" onPress={() => logAmount(s)} modifiers={[tint(p.accent)]} />
+              <UIButton label="Log" systemImage="square.and.pencil" onPress={() => logAmount(s)} modifiers={[tint(SWIPE_COLORS.log)]} />
             ) : null}
           </SwipeActions.Actions>
         ) : null}
