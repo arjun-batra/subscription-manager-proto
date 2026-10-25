@@ -39,7 +39,10 @@ export const SCHEMA_VERSION = 6;
 export async function migrate(db: SqlDb): Promise<void> {
   const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
   const version = row?.user_version ?? 0;
-  if (version >= SCHEMA_VERSION) return;
+  if (version >= SCHEMA_VERSION) {
+    await healColumns(db);
+    return;
+  }
   // journal_mode can't change inside a transaction, so it goes first, on its own.
   await db.execAsync('PRAGMA journal_mode = WAL');
   if (version < 1) {
@@ -125,6 +128,25 @@ export async function migrate(db: SqlDb): Promise<void> {
       await txn.execAsync('PRAGMA user_version = 6');
     });
   }
+}
+
+/**
+ * Columns added to an unreleased schema step after a dev build already ran it: a v6 database
+ * from build 47aa4b5 has user_version 6 but no deadline_set_at. Adds any that are missing
+ * (cheap: one PRAGMA per launch). Released steps never change, so this list only grows while a
+ * version is unreleased.
+ */
+const LATE_COLUMNS: { name: string; ddl: string }[] = [
+  { name: 'deadline_set_at', ddl: 'ALTER TABLE subscriptions ADD COLUMN deadline_set_at TEXT' },
+];
+
+async function healColumns(db: SqlDb): Promise<void> {
+  const have = new Set((await db.getAllAsync<{ name: string }>('PRAGMA table_info(subscriptions)')).map((c) => c.name));
+  const missing = LATE_COLUMNS.filter((c) => !have.has(c.name));
+  if (!missing.length) return;
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    for (const c of missing) await txn.execAsync(c.ddl);
+  });
 }
 
 /** Logged actuals are stored as JSON [{date, amount}]; anything unreadable is dropped, never fatal. */

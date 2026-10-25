@@ -2,7 +2,6 @@ import { useEffect } from 'react';
 import { Text, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 
-import { monthName } from '../domain/dates';
 import { formatMoney } from '../domain/money';
 import type { MonthTotals, TotalsResult } from '../domain/totals';
 import type { Subscription } from '../domain/types';
@@ -47,27 +46,17 @@ export function TotalsCard({
       <View
         accessible
         accessibilityRole="progressbar"
-        accessibilityLabel="Paid this month"
+        accessibilityLabel="Paid so far this month"
         accessibilityValue={{ text: `Paid ${money(month.paidSoFar)} of ${money(month.thisMonth)}` }}
         style={{ height: 8, borderRadius: 4, backgroundColor: p.chipBg, marginTop: 12, overflow: 'hidden' }}
       >
         <Animated.View style={[{ height: '100%', backgroundColor: p.accent }, bar]} />
       </View>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
-        <Text style={{ color: p.secondaryText, fontSize: 15 }}>Paid so far {money(month.paidSoFar)}</Text>
-        <Text style={{ color: p.secondaryText, fontSize: 15 }}>This month {money(month.thisMonth)}</Text>
+      {/* Wraps onto two lines when both don't fit (long amounts, larger text) instead of running together. */}
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', columnGap: 12, rowGap: 2, marginTop: 8 }}>
+        <Text style={{ color: p.secondaryText, fontSize: 15, flexShrink: 1 }}>Paid so far {money(month.paidSoFar)}</Text>
+        <Text style={{ color: p.secondaryText, fontSize: 15, flexShrink: 1 }}>This month {money(month.thisMonth)}</Text>
       </View>
-      <Text
-        accessibilityLabel={`Paid in ${monthName(month.monthStart)}: ${money(month.paidThisMonth)}`}
-        style={{ color: p.text, fontSize: 15, marginTop: 12 }}
-      >
-        Paid in {monthName(month.monthStart)} {money(month.paidThisMonth)}
-      </Text>
-      {Math.abs(month.paidThisMonth - month.paidSoFar) >= 0.005 ? (
-        <Text style={{ color: p.secondaryText, fontSize: 13, marginTop: 2 }}>
-          Counts each payment on the day you made it, including ones paid early.
-        </Text>
-      ) : null}
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 }}>
         <Text style={{ color: p.text, fontSize: 15 }}>Average {money(totals.overall.monthly)}/mo</Text>
         <Text style={{ color: p.text, fontSize: 15 }}>{money(totals.overall.yearly)}/yr</Text>

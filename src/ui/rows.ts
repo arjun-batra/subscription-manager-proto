@@ -7,7 +7,9 @@ import {
   describeTrialLeft,
   expectedAmount,
   hasPromo,
+  isPlan,
   isVariable,
+  paymentNumber,
   priceOn,
   pastCharges,
   planStatus,
@@ -15,6 +17,7 @@ import {
   withActual,
   withoutActual,
 } from '../domain/schedule';
+import type { PaidEntry } from '../domain/totals';
 import type { ActualCharge, LocalDate, Subscription } from '../domain/types';
 
 export interface RowModel {
@@ -82,6 +85,38 @@ export function upcomingRow(s: Subscription, next: LocalDate, today: LocalDate):
   return {
     ...model,
     accessibilityLabel: `${s.name}${model.badge ? `, ${model.badge.label}` : ''}, ${model.right}, ${model.subtitle}`,
+  };
+}
+
+/**
+ * A "Paid this month" row, laid out like an Upcoming row: the day it was paid · schedule, then a
+ * quiet note for a payment made early (or late, for an earlier month's charge). The amount is the
+ * logged actual, else what was marked, else the estimate ("about").
+ */
+export function paidRow(e: PaidEntry, today: LocalDate): RowModel {
+  const s = e.sub;
+  const when = e.paidOn === today ? 'Today' : shortDate(e.paidOn, today);
+  const schedule = isPlan(s) ? `Payment ${paymentNumber(s, e.chargeDate)} of ${s.totalPayments}` : describeCycle(s.cycle);
+  const notes: string[] = [];
+  if (e.early) notes.push(`paid early, due ${shortDate(e.chargeDate, today)}`);
+  else if (e.record && e.chargeDate < e.paidOn) notes.push(`for ${shortDate(e.chargeDate, today)}`);
+  if (s.cancelled) notes.push('cancelled since');
+  const subtitle = [`${when} · ${schedule}`, ...notes].join(' · ');
+  const promo = hasPromo(s) && e.chargeDate < s.promoEndDate!;
+  const badge = isPlan(s)
+    ? { label: 'Plan', tone: 'neutral' as const }
+    : isVariable(s)
+      ? { label: 'Varies', tone: 'neutral' as const }
+      : promo
+        ? { label: 'Promo', tone: 'neutral' as const }
+        : undefined;
+  const right = `${e.estimated ? 'about ' : ''}${formatMoney(e.amount, s.currency)}`;
+  return {
+    title: s.name,
+    subtitle,
+    ...(badge ? { badge } : {}),
+    right,
+    accessibilityLabel: `${s.name}${badge ? `, ${badge.label}` : ''}, paid ${right}, ${subtitle}`,
   };
 }
 

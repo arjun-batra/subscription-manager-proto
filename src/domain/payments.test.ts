@@ -125,59 +125,59 @@ describe('nextDue and marking paid', () => {
   });
 });
 
-describe('paid this month', () => {
+describe('paid so far (cash out this month)', () => {
   const s = settings({ rates: { USD: 1.4 } });
 
   it('fixed: past charges count on their date, marked ones on the day paid', () => {
     const a = sub({ id: 'a', amount: 10, anchorDate: '2026-10-05' }); // Oct 5: past
     const b = sub({ id: 'b', amount: 20, anchorDate: '2026-10-28' }); // Oct 28: still due
     const m = computeMonthTotals([a, b], s, '2026-10-25');
-    expect(m).toMatchObject({ thisMonth: 30, stillDue: 20, paidSoFar: 10, paidThisMonth: 10 });
+    expect(m).toMatchObject({ thisMonth: 30, stillDue: 20, paidSoFar: 10 });
     const paid = mark(b, '2026-10-25').sub;
-    expect(computeMonthTotals([a, paid], s, '2026-10-25')).toMatchObject({ thisMonth: 30, stillDue: 0, paidSoFar: 30, paidThisMonth: 30 });
+    expect(computeMonthTotals([a, paid], s, '2026-10-25')).toMatchObject({ thisMonth: 30, stillDue: 0, paidSoFar: 30 });
   });
 
-  it('paying next month’s charge early counts in this month’s cash, not next month’s', () => {
+  it('paying next month’s charge early counts in this month, not next month', () => {
     const n = sub({ id: 'n', amount: 16, anchorDate: '2026-11-05' });
     const early = mark(n, '2026-10-25').sub;
     const oct = computeMonthTotals([early], s, '2026-10-25');
-    expect(oct).toMatchObject({ thisMonth: 16, stillDue: 0, paidSoFar: 16, paidThisMonth: 32 }); // Oct 5 + Nov 5 paid early
+    expect(oct).toMatchObject({ thisMonth: 32, stillDue: 0, paidSoFar: 32 }); // Oct 5 + Nov 5 paid early
     const nov = computeMonthTotals([early], s, '2026-11-02');
-    expect(nov).toMatchObject({ thisMonth: 16, stillDue: 0, paidSoFar: 16, paidThisMonth: 0 });
+    expect(nov).toMatchObject({ thisMonth: 0, stillDue: 0, paidSoFar: 0, paid: [] }); // paid in October
     const novLater = computeMonthTotals([early], s, '2026-11-10');
-    expect(novLater.paidThisMonth).toBe(0); // paid in October, so not again in November
+    expect(novLater.paidSoFar).toBe(0);
   });
 
   it('variable bills: the logged actual when there is one, else the estimate', () => {
     const hydro = sub({ id: 'h', amount: 85, variable: true, anchorDate: '2026-10-10', actuals: [{ date: '2026-08-10', amount: 80 }, { date: '2026-10-10', amount: 97 }] });
-    expect(computeMonthTotals([hydro], s, '2026-10-25').paidThisMonth).toBe(97);
+    expect(computeMonthTotals([hydro], s, '2026-10-25').paidSoFar).toBe(97);
     const noActual = sub({ id: 'h2', amount: 85, variable: true, anchorDate: '2026-10-10', actuals: [{ date: '2026-08-10', amount: 80 }] });
-    expect(computeMonthTotals([noActual], s, '2026-10-25').paidThisMonth).toBe(80); // estimate = average of actuals
+    expect(computeMonthTotals([noActual], s, '2026-10-25').paidSoFar).toBe(80); // estimate = average of actuals
   });
 
-  it('trials: CA$0 until converted, then the post-trial price', () => {
+  it('trials: nothing until converted, then the post-trial price', () => {
     const t = sub({ id: 't', amount: 12, trialEndDate: '2026-10-28', anchorDate: '2026-10-28' });
-    expect(computeMonthTotals([t], s, '2026-10-25')).toMatchObject({ paidThisMonth: 0, stillDue: 12 });
-    expect(computeMonthTotals([t], s, '2026-10-29')).toMatchObject({ paidThisMonth: 12, stillDue: 0 });
+    expect(computeMonthTotals([t], s, '2026-10-25')).toMatchObject({ paidSoFar: 0, stillDue: 12 });
+    expect(computeMonthTotals([t], s, '2026-10-29')).toMatchObject({ paidSoFar: 12, stillDue: 0 });
     const early = mark(t, '2026-10-25').sub; // kept on purpose and paid
-    expect(computeMonthTotals([early], s, '2026-10-25').paidThisMonth).toBe(12);
+    expect(computeMonthTotals([early], s, '2026-10-25').paidSoFar).toBe(12);
   });
 
   it('plans count each instalment; foreign currency is converted to CA$', () => {
     const plan = sub({ id: 'p', amount: 50, currency: 'USD', anchorDate: '2026-09-05', startDate: '2026-09-05', totalPayments: 3 });
-    expect(computeMonthTotals([plan], s, '2026-10-25').paidThisMonth).toBeCloseTo(70);
+    expect(computeMonthTotals([plan], s, '2026-10-25').paidSoFar).toBeCloseTo(70);
     const done = mark(plan, '2026-10-25').sub; // Nov 5, the last one, paid early
-    expect(computeMonthTotals([done], s, '2026-10-25').paidThisMonth).toBeCloseTo(140);
+    expect(computeMonthTotals([done], s, '2026-10-25').paidSoFar).toBeCloseTo(140);
   });
 
   it('a payment marked on an item that was later cancelled still counts as money paid', () => {
     const paid = { ...mark(sub({ id: 'c', amount: 9, anchorDate: '2026-11-05' }), '2026-10-25').sub, cancelled: true };
-    expect(computeMonthTotals([paid], s, '2026-10-25')).toMatchObject({ thisMonth: 0, paidThisMonth: 9 });
+    expect(computeMonthTotals([paid], s, '2026-10-25')).toMatchObject({ thisMonth: 9, stillDue: 0, paidSoFar: 9 });
   });
 
   it('marks paid in an earlier month are not counted this month', () => {
     const x = sub({ id: 'x', amount: 10, anchorDate: '2026-10-05', payments: [{ date: '2026-10-05', paidOn: '2026-09-30', amount: 10 }] });
-    expect(computeMonthTotals([x], s, '2026-10-25')).toMatchObject({ paidSoFar: 10, paidThisMonth: 0 });
+    expect(computeMonthTotals([x], s, '2026-10-25')).toMatchObject({ paidSoFar: 0, stillDue: 0, thisMonth: 0, paid: [] });
   });
 });
 

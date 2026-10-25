@@ -49,7 +49,7 @@ export const AMBIGUOUS_ALIASES: Record<string, string[]> = {
   nitro: [],
   freedom: ['home'],
   shaw: ['home'],
-  bell: ['canada', 'mobility', 'fibe'],
+  bell: ['canada', 'mobility', 'fibe', 'home', 'phone', 'aliant', 'mts'],
   fibe: [],
   medium: [],
   notion: ['ai', 'calendar', 'mail'],
@@ -76,7 +76,12 @@ function aliasMatches(n: string, a: string): boolean {
     .slice(a.length + 1)
     .split(' ')
     .map((w) => w.replace(/\+$/, '')) // "Business+" reads as "business"
-    .every((w) => !w || PLAN_WORDS.has(w) || extra.includes(w));
+    .every((w, i, words) => {
+      if (!w) return true;
+      // "card" only as in "gift card": "Slack Business Card" is a print shop, not Slack.
+      if (w === 'card') return words[i - 1] === 'gift';
+      return PLAN_WORDS.has(w) || extra.includes(w);
+    });
 }
 
 /**

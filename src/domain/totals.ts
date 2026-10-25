@@ -1,12 +1,13 @@
-import { monthBounds, toLocalDate } from './dates';
+import { addDays, monthBounds, toLocalDate } from './dates';
 import { toHome } from './money';
-import { amountForCharge, chargesBetween, expectedAmount, hasPromo, inTrial, isCompleted, isPlan, paymentFor, planStatus, priceOn } from './schedule';
+import { amountForCharge, chargesBetween, expectedAmount, hasPromo, inTrial, isCompleted, isPlan, isVariable, paymentFor, planStatus, priceOn } from './schedule';
 import {
   UNCATEGORIZED_ID,
   UNCATEGORIZED_NAME,
   type Category,
   type Cycle,
   type LocalDate,
+  type PaymentRecord,
   type Settings,
   type Subscription,
 } from './types';
@@ -180,29 +181,97 @@ export interface MonthCharge {
   paid: boolean;
 }
 
+/**
+ * One payment in the "Paid this month" list: a charge that was billed (its date has passed and it
+ * wasn't marked) or a charge marked paid during this month, including one paid early for a later
+ * charge. A charge marked in an earlier month isn't here (that money went out then).
+ */
+export interface PaidEntry {
+  sub: Subscription;
+  /** The charge date it settles. */
+  chargeDate: LocalDate;
+  /** The day the money went out: the day it was marked, else the charge date. */
+  paidOn: LocalDate;
+  /** In the item's currency: the logged actual, else the marked amount, else the price on that date. */
+  amount: number;
+  /** In the home currency; null when the currency has no rate yet (left out of the total). */
+  homeAmount: number | null;
+  /** A variable bill with no logged actual: the amount is an estimate. */
+  estimated: boolean;
+  /** The marked payment, when there is one (Undo Paid reverts it). */
+  record: PaymentRecord | null;
+  /** Marked before its charge date. */
+  early: boolean;
+}
+
+/** Newest first: by the day paid, then the charge date, then name. */
+function byRecent(a: PaidEntry, b: PaidEntry): number {
+  if (a.paidOn !== b.paidOn) return a.paidOn > b.paidOn ? -1 : 1;
+  if (a.chargeDate !== b.chargeDate) return a.chargeDate > b.chargeDate ? -1 : 1;
+  return a.sub.name.localeCompare(b.sub.name);
+}
+
+/**
+ * Everything paid in the calendar month of `today`, up to today, newest first. Unmarked charges
+ * count once their date has passed (a charge due today is still due, as in stillDue) and only on
+ * items that aren't cancelled; marked payments count on the day they were marked, even on an item
+ * cancelled since. Trials add nothing until their first paid charge; each plan instalment is a charge.
+ */
+export function paidEntries(subs: Subscription[], settings: Settings, today: LocalDate): PaidEntry[] {
+  const { start } = monthBounds(today);
+  const out: PaidEntry[] = [];
+  const entry = (sub: Subscription, chargeDate: LocalDate, record: PaymentRecord | null): PaidEntry => {
+    const amount = amountForCharge(sub, chargeDate);
+    const logged = sub.actuals?.some((a) => a.date === chargeDate) ?? false;
+    return {
+      sub,
+      chargeDate,
+      paidOn: record?.paidOn ?? chargeDate,
+      amount,
+      homeAmount: toHome(amount, sub.currency, settings),
+      estimated: isVariable(sub) && !logged,
+      record,
+      early: !!record && chargeDate > record.paidOn,
+    };
+  };
+  if (today > start) {
+    const yesterday = addDays(today, -1);
+    for (const sub of active(subs)) {
+      for (const date of chargesBetween(sub, start, yesterday)) {
+        if (!paymentFor(sub, date)) out.push(entry(sub, date, null));
+      }
+    }
+  }
+  for (const sub of subs) {
+    for (const p of sub.payments ?? []) {
+      if (p.paidOn >= start && p.paidOn <= today) out.push(entry(sub, p.date, p));
+    }
+  }
+  return out.sort(byRecent);
+}
+
 export interface MonthTotals {
-  /** Every charge due this calendar month. */
+  /** paidSoFar + stillDue: the money going out this calendar month, paid or still to pay. */
   thisMonth: number;
   /** Charges due today or later this month and not marked paid (a charge due today is still due). */
   stillDue: number;
-  /** thisMonth - stillDue: this month's charges already paid (past ones, and ones marked paid). */
+  /** The sum of `paid` (the "Paid this month" list), in the home currency. */
   paidSoFar: number;
-  /**
-   * Money paid during this calendar month, by the day it was paid: charges due before today that
-   * weren't marked paid on another day, plus every payment marked this month, including ones paid
-   * early for a later charge. A charge marked last month for this month isn't in here.
-   */
-  paidThisMonth: number;
+  /** The "Paid this month" list, newest first. */
+  paid: PaidEntry[];
   /** First day of this calendar month. */
   monthStart: LocalDate;
   charges: MonthCharge[];
-  /** Subscriptions with a charge this month but no exchange rate. */
+  /** Subscriptions with a charge or payment this month but no exchange rate. */
   missingRate: Subscription[];
 }
 
 /**
- * Current-calendar-month totals for the device's local "today". Trials add nothing before their
- * end date (the first paid charge counts on that day); plans stop after their last payment.
+ * Current-calendar-month totals for the device's local "today", counted by the day money goes out
+ * (Decision 54, revised): paid so far is the "Paid this month" list; still due is this month's
+ * charges from today on that aren't marked. A charge of this month paid early last month is in
+ * neither (it was paid last month). Trials add nothing before their end date; plans stop after
+ * their last payment.
  */
 export function computeMonthTotals(
   subs: Subscription[],
@@ -210,9 +279,7 @@ export function computeMonthTotals(
   today: LocalDate,
 ): MonthTotals {
   const { start, end } = monthBounds(today);
-  let thisMonth = 0;
   let stillDue = 0;
-  let paidThisMonth = 0;
   const charges: MonthCharge[] = [];
   const missing = new Map<string, Subscription>();
 
@@ -221,34 +288,27 @@ export function computeMonthTotals(
       // Variable bills: the logged actual where there is one, else the estimate. Promos: the
       // regular price from the end date. Marked payments: what was paid.
       const homeAmount = toHome(amountForCharge(sub, date), sub.currency, settings);
-      const record = paymentFor(sub, date);
-      const paid = date < today || !!record;
+      const paid = date < today || !!paymentFor(sub, date);
       charges.push({ sub, date, homeAmount, paid });
       if (homeAmount === null) {
-        missing.set(sub.id, sub);
+        if (!paid) missing.set(sub.id, sub);
         continue;
       }
-      thisMonth += homeAmount;
       if (!paid) stillDue += homeAmount;
-      // Paid by being due (not marked): counts on its due date.
-      if (date < today && !record) paidThisMonth += homeAmount;
     }
   }
-  // Marked payments count on the day they were marked, even for a cancelled item or a later charge.
-  for (const sub of subs) {
-    for (const p of sub.payments ?? []) {
-      if (p.paidOn < start || p.paidOn > end || p.paidOn > today) continue;
-      const home = toHome(amountForCharge(sub, p.date), sub.currency, settings);
-      if (home === null) missing.set(sub.id, sub);
-      else paidThisMonth += home;
-    }
+  const paid = paidEntries(subs, settings, today);
+  let paidSoFar = 0;
+  for (const e of paid) {
+    if (e.homeAmount === null) missing.set(e.sub.id, e.sub);
+    else paidSoFar += e.homeAmount;
   }
   charges.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   return {
-    thisMonth,
+    thisMonth: paidSoFar + stillDue,
     stillDue,
-    paidSoFar: Math.max(0, thisMonth - stillDue),
-    paidThisMonth,
+    paidSoFar,
+    paid,
     monthStart: start,
     charges,
     missingRate: [...missing.values()],

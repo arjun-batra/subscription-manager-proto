@@ -132,6 +132,8 @@ describe('brand marks', () => {
     ['Prime Home', null],
     ['Prime Phone', null],
     ['Freedom Phone', null],
+    ['Slack Business Card', null],
+    ['Slack Card', null],
     ['Shaw Phone', null],
   ])('ambiguous one-word alias, other business: %s -> no brand', (name, slug) => {
     expect(matchBrand(name)?.slug ?? null).toBe(slug);
@@ -168,6 +170,9 @@ describe('brand marks', () => {
     ['Rogers Ignite', 'rogers'],
     ['Sonnet Car Insurance', 'sonnet'],
     ['Crave Total', 'crave'],
+    ['Bell Home Phone', 'bell'],
+    ['Bell Phone', 'bell'],
+    ['Bell Home', 'bell'],
     ['Crave', 'crave'],
     ['Slack Business+', 'slack'],
     ['Slack Pro', 'slack'],

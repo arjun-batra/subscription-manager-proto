@@ -4,6 +4,7 @@
  * withExclusiveTransactionAsync does BEGIN EXCLUSIVE / COMMIT / ROLLBACK the same way.
  */
 import type { ImportDraft } from '../domain/csv';
+import { sub as fixtureSub } from '../domain/fixtures';
 import {
   DuplicateCategoryError,
   importDraftsInto,
@@ -181,6 +182,20 @@ describe('migrations', () => {
     expect(userVersion(db)).toBe(SCHEMA_VERSION);
     const snap = await loadSnapshot(db);
     expect(snap.subscriptions).toEqual([expect.objectContaining({ id: 's1', name: 'Netflix', startDate: null })]);
+  });
+
+  it('adds deadline_set_at to a v6 database from the 47aa4b5 dev build that lacks it', async () => {
+    const db = nodeDb();
+    await migrate(db);
+    db.raw.exec('ALTER TABLE subscriptions DROP COLUMN deadline_set_at');
+    expect(columns(db)).not.toContain('deadline_set_at');
+    await migrate(db);
+    expect(columns(db)).toContain('deadline_set_at');
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
+    await writeSub(db, fixtureSub({ id: 'h1', cancelByDate: '2026-12-01', deadlineSetAt: '2026-10-25T10:00:00.000Z' }));
+    expect((await loadSnapshot(db)).subscriptions[0].deadlineSetAt).toBe('2026-10-25T10:00:00.000Z');
+    await migrate(db); // healthy now: nothing to do
+    expect(columns(db).filter((c) => c === 'deadline_set_at')).toHaveLength(1);
   });
 
   it('creates a fresh database at the current version', async () => {

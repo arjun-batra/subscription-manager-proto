@@ -24,10 +24,13 @@ describe('swipe-action buttons (white label and glyph in light and dark mode)', 
 
   it('every swipe action in the home list is tinted with one of these fills', () => {
     const src = readFileSync(join(__dirname, 'HomeScreen.tsx'), 'utf8');
-    const swipes = src.slice(src.indexOf('<SwipeActions.Actions'), src.lastIndexOf('</SwipeActions.Actions>'));
-    const buttons = swipes.match(/<UIButton[\s\S]*?\/>/g) ?? [];
-    expect(buttons.length).toBeGreaterThanOrEqual(4);
-    for (const b of buttons) expect(b).toMatch(/modifiers=\{\[tint\(SWIPE_COLORS\.(paid|log|cancel|delete)\)\]\}/);
+    // Each <SwipeActions.Actions> block on its own (rows of different sections have their own).
+    const blocks = src.match(/<SwipeActions\.Actions[\s\S]*?<\/SwipeActions\.Actions>/g) ?? [];
+    expect(blocks.length).toBeGreaterThanOrEqual(3);
+    const buttons = blocks.flatMap((b) => b.match(/<UIButton[\s\S]*?\/>/g) ?? []);
+    expect(buttons.length).toBeGreaterThanOrEqual(5);
+    const keys = Object.keys(SWIPE_COLORS).join('|');
+    for (const b of buttons) expect(b).toMatch(new RegExp(`modifiers=\\{\\[tint\\(SWIPE_COLORS\\.(${keys})\\)\\]\\}`));
     // No system colour names or palette accents anywhere a tint is applied.
     expect(src).not.toMatch(/tint\((?!SWIPE_COLORS\.)/);
   });
