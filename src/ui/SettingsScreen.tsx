@@ -4,7 +4,10 @@ import * as Sharing from 'expo-sharing';
 import { useState } from 'react';
 import { Alert, ScrollView, Text, TextInput, View } from 'react-native';
 
+import { backupFileName, backupJson, makeBackup, MAX_BACKUP_BYTES, parseBackup, type ParsedBackup } from '../domain/backup';
 import { CSV_TEMPLATE, previewImport, toCsv, type PreviewRow } from '../domain/csv';
+import { toLocalDate } from '../domain/dates';
+import { SCHEMA_VERSION } from '../data/sql';
 import { changeHomeCurrency, isValidCurrency } from '../domain/money';
 import { cycleShorterThanLead } from '../domain/schedule';
 import { sendTestNotification, requestPermission } from '../services/notifications';
@@ -12,15 +15,53 @@ import { Card, Chip, Field, Row, SectionHeader } from './components';
 import { useStore } from './store';
 import { usePalette } from './theme';
 
-async function shareText(filename: string, text: string) {
+/** Deletes a file in the app's cache, ignoring errors (it may already be gone). */
+function removeCached(file: File) {
+  try {
+    if (file.uri.startsWith(Paths.cache.uri) && file.exists) file.delete();
+  } catch {
+    // nothing to clean up
+  }
+}
+
+/**
+ * Writes the text to a cache file, opens the share sheet, and deletes the file once the sheet is
+ * closed (Files and AirDrop have their own copy by then), so no plain-text copy is left behind.
+ */
+async function shareText(filename: string, text: string, type: { mimeType: string; UTI: string } = { mimeType: 'text/csv', UTI: 'public.comma-separated-values-text' }) {
   const file = new File(Paths.cache, filename);
   if (file.exists) file.delete();
   file.create();
-  await file.write(text);
-  await Sharing.shareAsync(file.uri, { mimeType: 'text/csv', UTI: 'public.comma-separated-values-text' });
+  try {
+    await file.write(text);
+    await Sharing.shareAsync(file.uri, { ...type, dialogTitle: filename });
+  } finally {
+    removeCached(file);
+  }
 }
 
-export function SettingsScreen({ onPreview }: { onPreview: (rows: PreviewRow[]) => void }) {
+/**
+ * Reads a picked file's text, refusing anything bigger than `maxBytes` before reading it, then
+ * deletes the picker's copy in the cache. Returns an error message instead of throwing.
+ */
+async function readPicked(asset: DocumentPicker.DocumentPickerAsset, maxBytes: number): Promise<{ text: string } | { error: string }> {
+  const file = new File(asset.uri);
+  try {
+    const size = asset.size ?? file.size;
+    if (typeof size === 'number' && size > maxBytes) {
+      return { error: `This file is ${(size / 1024 / 1024).toFixed(1)} MB, too big for this app (the limit is ${Math.round(maxBytes / 1024 / 1024)} MB). Nothing was changed.` };
+    }
+    return { text: await file.text() };
+  } catch (e) {
+    return { error: `The file couldn’t be read. Nothing was changed. (${String(e).slice(0, 200)})` };
+  } finally {
+    removeCached(file);
+  }
+}
+
+export type RestoreRequest = Extract<ParsedBackup, { ok: true }>;
+
+export function SettingsScreen({ onPreview, onRestore }: { onPreview: (rows: PreviewRow[]) => void; onRestore: (r: RestoreRequest) => void }) {
   const p = usePalette();
   const store = useStore();
   const { settings, subscriptions, categories } = store;
@@ -61,11 +102,28 @@ export function SettingsScreen({ onPreview }: { onPreview: (rows: PreviewRow[]) 
       copyToCacheDirectory: true,
     });
     if (res.canceled || !res.assets?.[0]) return;
-    const text = await new File(res.assets[0].uri).text();
-    const preview = previewImport(text, subscriptions);
+    const read = await readPicked(res.assets[0], MAX_BACKUP_BYTES);
+    if ('error' in read) return Alert.alert('Can’t import this file', read.error);
+    const preview = previewImport(read.text, subscriptions, store.today);
     if (!preview.ok) return Alert.alert('Can’t import this file', preview.error);
     if (!preview.rows.length) return Alert.alert('Nothing to import', 'The file has a header row but no data rows.');
     onPreview(preview.rows);
+  }
+
+  /** One file with everything; the share sheet saves it to Files, AirDrops it, and so on. */
+  async function backUp() {
+    const file = makeBackup({ subscriptions, categories, settings }, SCHEMA_VERSION);
+    await shareText(backupFileName(toLocalDate(new Date())), backupJson(file), { mimeType: 'application/json', UTI: 'public.json' });
+  }
+
+  async function pickBackup() {
+    const res = await DocumentPicker.getDocumentAsync({ type: ['application/json', 'public.json', 'text/plain'], copyToCacheDirectory: true });
+    if (res.canceled || !res.assets?.[0]) return;
+    const read = await readPicked(res.assets[0], MAX_BACKUP_BYTES);
+    if ('error' in read) return Alert.alert('Can’t read this file', read.error);
+    const parsed = parseBackup(read.text);
+    if (!parsed.ok) return Alert.alert('Can’t restore this file', parsed.error);
+    onRestore(parsed);
   }
 
   return (
@@ -179,9 +237,25 @@ export function SettingsScreen({ onPreview }: { onPreview: (rows: PreviewRow[]) 
           last
         />
       </Card>
+
+      <SectionHeader>Backup</SectionHeader>
+      <Card>
+        <Row
+          title="Back Up All Data"
+          subtitle="One file with every item, category, logo, logged amount, paid record and setting. Save it to Files or AirDrop it."
+          onPress={() => backUp().catch((e) => Alert.alert('Backup failed', String(e)))}
+        />
+        <Row
+          title="Restore from Backup…"
+          subtitle="Pick a backup file. You see what’s in it before anything is replaced."
+          onPress={() => pickBackup().catch((e) => Alert.alert('Restore failed', `Nothing was changed. ${String(e)}`))}
+          last
+        />
+      </Card>
       <Text style={{ color: p.secondaryText, fontSize: 13, marginHorizontal: 20, marginTop: 8 }}>
         Your data is stored only on this phone and in your own device backups. This app has no account, no analytics, and
-        makes no network calls.
+        makes no network calls. Backup and CSV files you export are not encrypted: anyone with the file can read your
+        items, notes and links, so keep them somewhere private. The app deletes its own temporary copy after sharing.
       </Text>
     </ScrollView>
   );

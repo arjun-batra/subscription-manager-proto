@@ -31,6 +31,22 @@ export interface ActualCharge {
   amount: number;
 }
 
+/**
+ * A charge the user marked as paid (possibly before its due date). Keyed by the charge date it
+ * settles; `paidOn` is the day it was marked. Paying early moves the next due date on and
+ * removes that charge's reminder.
+ */
+export interface PaymentRecord {
+  /** The charge date this payment settles (one of the item's charge dates). */
+  date: LocalDate;
+  /** The local day the user marked it paid. */
+  paidOn: LocalDate;
+  /** What was paid, in the item's currency. */
+  amount: number;
+  /** True when marking it paid also logged the variable bill's actual (so undo removes both). */
+  loggedActual?: boolean;
+}
+
 export interface Subscription {
   id: string;
   name: string;
@@ -72,6 +88,23 @@ export interface Subscription {
    * Null or absent: Automatic (match a brand by name, else a coloured first letter).
    */
   logo?: string | null;
+  /** Charges marked paid, at most one per charge date. */
+  payments?: PaymentRecord[];
+  /**
+   * Promotional price: `amount` is the promo price, charged before this date; charges on or after
+   * it are `regularAmount` (e.g. Rogers' first-12-months price). Not for plans or variable bills.
+   */
+  promoEndDate?: LocalDate | null;
+  /** The regular price after the promo, in the item's currency. Set together with promoEndDate. */
+  regularAmount?: number | null;
+  /** Optional deadline to cancel by (a trial, a contract notice period). Reminders 3 and 1 day before. */
+  cancelByDate?: LocalDate | null;
+  /**
+   * When a deadline (trial end, cancel-by, promo end) was last set or changed (ISO). A catch-up
+   * reminder for a deadline saved too late for its lead reminders keys on this, not on updatedAt,
+   * so marking paid or other edits don't send it again.
+   */
+  deadlineSetAt?: string | null;
   categoryIds: string[];
   notes: string;
   manageUrl: string;

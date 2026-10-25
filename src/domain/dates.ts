@@ -239,6 +239,13 @@ function describeBaseCycle(c: Cycle): string {
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+const LONG_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/** "October" */
+export function monthName(date: LocalDate): string {
+  return LONG_MONTHS[mustParse(date).m - 1];
+}
+
 /** "Nov 5" or "Nov 5, 2027" when not in the reference year. */
 export function shortDate(date: LocalDate, referenceToday?: LocalDate): string {
   const { y, m, d } = mustParse(date);

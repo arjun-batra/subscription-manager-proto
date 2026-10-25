@@ -37,11 +37,16 @@ export function LogoPicker({
   const [color, setColor] = useState<IconColor | null>(ref?.kind === 'icon' ? ref.color : null);
   const results = useMemo(() => searchLogos(query), [query]);
 
-  const pick = (logo: string | null) => {
-    void Haptics.selectionAsync();
-    onPick(logo);
+  // Closing any way (Cancel, swipe down, or a pick) clears the search for next time.
+  const close = () => {
     setQuery('');
     onClose();
+  };
+
+  const pick = (logo: string | null) => {
+    Haptics.selectionAsync().catch(() => {});
+    onPick(logo);
+    close();
   };
 
   const cell = (key: string, tile: LogoTile, label: string, selected: boolean, logo: string | null, hint?: string) => (
@@ -66,10 +71,10 @@ export function LogoPicker({
   const auto = autoLogoTile(name);
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
       <View style={{ flex: 1, backgroundColor: p.background }}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 8 }}>
-          <Button title="Cancel" onPress={onClose} />
+          <Button title="Cancel" onPress={close} />
           <Text accessibilityRole="header" style={{ color: p.text, fontSize: 17, fontWeight: '600' }}>
             Logo
           </Text>

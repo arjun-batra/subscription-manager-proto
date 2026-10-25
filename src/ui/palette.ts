@@ -50,6 +50,21 @@ export const dark: Palette = {
   chipSelectedText: '#000000',
 };
 
+/**
+ * Fills of the iOS swipe-action buttons. iOS draws their label and glyph in white in both light
+ * and dark mode, so one set works for both; each passes 4.5:1 against white (palette.test.ts).
+ * System green, orange and red (and the dark-mode accent) don't.
+ */
+export const SWIPE_COLORS = {
+  paid: '#2E7D32',
+  log: '#0062CC',
+  cancel: '#A34700',
+  delete: '#B3261E',
+} as const;
+
+/** The swipe-action label colour iOS uses, in both modes. */
+export const SWIPE_LABEL = '#FFFFFF';
+
 function channel(c: number): number {
   const s = c / 255;
   return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);

@@ -26,6 +26,11 @@ const banned = [
   [/navigator\s*\.\s*sendBeacon/, 'sendBeacon'],
   [/getExpoPushTokenAsync|getDevicePushTokenAsync|registerForPushNotifications/, 'push token'],
   [/\bloadAsync\s*\(/, 'Font/Asset loadAsync (check for remote URLs)'],
+  // expo-file-system transfers, whatever the URL (a variable URL has no literal to catch).
+  [
+    /\b(downloadFileAsync|downloadAsync|createDownloadResumable|DownloadResumable|uploadAsync|createUploadTask)\b/,
+    'expo-file-system network transfer',
+  ],
   [new RegExp(`from\\s+['"\`]${BANNED_MODULES}['"\`]`), 'banned import'],
   [new RegExp(`\\brequire\\s*\\(\\s*['"\`]${BANNED_MODULES}['"\`]`), 'banned require()'],
   [new RegExp(`\\bimport\\s*\\(\\s*['"\`]${BANNED_MODULES}['"\`]`), 'banned dynamic import()'],

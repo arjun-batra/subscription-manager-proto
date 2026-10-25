@@ -16,6 +16,12 @@ export function sub(partial: Partial<Subscription> & { cycle?: Cycle } = {}): Su
     variable: partial.variable ?? false,
     actuals: partial.actuals ?? [],
     logo: partial.logo ?? null,
+    payments: partial.payments ?? [],
+    promoEndDate: partial.promoEndDate ?? null,
+    regularAmount: partial.regularAmount ?? null,
+    cancelByDate: partial.cancelByDate ?? null,
+    // Tests that pass updatedAt for a late save get the same deadline stamp unless they say otherwise.
+    deadlineSetAt: partial.deadlineSetAt !== undefined ? partial.deadlineSetAt : (partial.updatedAt ?? '2026-10-25T00:00:00.000Z'),
     categoryIds: partial.categoryIds ?? [],
     notes: partial.notes ?? '',
     manageUrl: partial.manageUrl ?? '',

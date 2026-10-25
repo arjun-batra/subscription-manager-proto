@@ -9,6 +9,8 @@ import {
   importDraftsInto,
   loadSnapshot,
   migrate,
+  parsePayments,
+  replaceAllIn,
   saveCategoryIn,
   SCHEMA_VERSION,
   writeSub,
@@ -96,6 +98,10 @@ const draft = (over: Partial<ImportDraft> = {}): ImportDraft => ({
   variable: false,
   actuals: [],
   logo: null,
+  promoEndDate: null,
+  regularAmount: null,
+  cancelByDate: null,
+  payments: [],
   ...over,
 });
 
@@ -430,7 +436,7 @@ describe('migration to v5 (logo picker)', () => {
     const db = nodeDb();
     db.raw.exec(V4_SCHEMA);
     await migrate(db);
-    expect(userVersion(db)).toBe(5);
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
     expect(columns(db)).toContain('logo');
     const snap = await loadSnapshot(db);
     expect(snap.subscriptions).toHaveLength(4);
@@ -459,7 +465,7 @@ describe('migration to v5 (logo picker)', () => {
     expect(userVersion(db)).toBe(4);
     expect(columns(db)).not.toContain('logo');
     await migrate(db);
-    expect(userVersion(db)).toBe(5);
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
     expect(columns(db).filter((c) => c === 'logo')).toHaveLength(1);
   });
 
@@ -476,6 +482,177 @@ describe('migration to v5 (logo picker)', () => {
     expect(snap.subscriptions.find((x) => x.name === 'My phone')!.logo).toBeNull();
     db.raw.exec(`UPDATE subscriptions SET logo = 'brand:no-such-brand'`);
     expect((await loadSnapshot(db)).subscriptions.every((x) => x.logo === null)).toBe(true);
+  });
+});
+
+const V5_SCHEMA = `${V4_SCHEMA.replace('PRAGMA user_version = 4;', '')}
+  ALTER TABLE subscriptions ADD COLUMN logo TEXT;
+  UPDATE subscriptions SET logo = 'brand:netflix' WHERE id = 's1';
+  PRAGMA user_version = 5;
+`;
+
+const V6_COLUMNS = ['payments', 'promo_end_date', 'regular_amount', 'cancel_by_date', 'deadline_set_at'];
+
+describe('migration to v6 (paid records, promos, cancel-by)', () => {
+  it('upgrades a version 5 database; nothing is marked paid, no promos or deadlines, data kept', async () => {
+    const db = nodeDb();
+    db.raw.exec(V5_SCHEMA);
+    const before = await loadSnapshot(db);
+    await migrate(db);
+    expect(userVersion(db)).toBe(6);
+    expect(columns(db)).toEqual(expect.arrayContaining(V6_COLUMNS));
+    const snap = await loadSnapshot(db);
+    expect(snap.subscriptions).toHaveLength(before.subscriptions.length);
+    for (const x of snap.subscriptions) {
+      expect(x).toMatchObject({ payments: [], promoEndDate: null, regularAmount: null, cancelByDate: null, deadlineSetAt: null });
+      const old = before.subscriptions.find((b) => b.id === x.id)!;
+      expect({ ...x, payments: undefined, promoEndDate: undefined, regularAmount: undefined, cancelByDate: undefined }).toEqual({
+        ...old,
+        payments: undefined,
+        promoEndDate: undefined,
+        regularAmount: undefined,
+        cancelByDate: undefined,
+      });
+    }
+    expect(snap.subscriptions.find((x) => x.id === 's1')!.logo).toBe('brand:netflix');
+    expect(snap.categories).toEqual(before.categories);
+    expect(snap.settings).toEqual(before.settings);
+  });
+
+  it('upgrades a version 1 database all the way to v6', async () => {
+    const db = nodeDb();
+    db.raw.exec(V1_SCHEMA);
+    await migrate(db);
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
+    expect(SCHEMA_VERSION).toBe(6);
+    expect(columns(db)).toEqual(expect.arrayContaining(V6_COLUMNS));
+  });
+
+  it.each([/ADD COLUMN payments/, /ADD COLUMN promo_end_date/, /ADD COLUMN regular_amount/, /ADD COLUMN cancel_by_date/, /ADD COLUMN deadline_set_at/, /user_version = 6/])(
+    'rolls back a crash at %s to v5, then retries cleanly',
+    async (at) => {
+      const db = nodeDb();
+      db.raw.exec(V5_SCHEMA);
+      const first: SqlDb = {
+        ...db,
+        async withExclusiveTransactionAsync(task) {
+          return db.withExclusiveTransactionAsync(async (txn) => {
+            await task({
+              ...txn,
+              async execAsync(source: string) {
+                if (at.test(source)) throw new Error('app killed (simulated)');
+                await txn.execAsync(source);
+              },
+            });
+          });
+        },
+      };
+      await expect(migrate(first)).rejects.toThrow('app killed (simulated)');
+      expect(userVersion(db)).toBe(5);
+      for (const c of V6_COLUMNS) expect(columns(db)).not.toContain(c);
+      await migrate(db);
+      expect(userVersion(db)).toBe(6);
+      for (const c of V6_COLUMNS) expect(columns(db).filter((x) => x === c)).toHaveLength(1);
+    },
+  );
+
+  it('saves and loads payments, a promo and a cancel-by date; unreadable payments are dropped', async () => {
+    const db = nodeDb();
+    await migrate(db);
+    await importDraftsInto(
+      db,
+      [
+        draft({
+          name: 'Rogers',
+          promoEndDate: '2027-03-15',
+          regularAmount: 75,
+          cancelByDate: '2027-03-01',
+          payments: [{ date: '2026-11-05', paidOn: '2026-11-01', amount: 16.49 }],
+        }),
+      ],
+      makeId,
+    );
+    let snap = await loadSnapshot(db);
+    const r = snap.subscriptions[0];
+    expect(r).toMatchObject({
+      promoEndDate: '2027-03-15',
+      regularAmount: 75,
+      cancelByDate: '2027-03-01',
+      payments: [{ date: '2026-11-05', paidOn: '2026-11-01', amount: 16.49 }],
+    });
+    // An imported item with a deadline is stamped at import time, for the catch-up reminder.
+    expect(r.deadlineSetAt).toBe(r.createdAt);
+    await db.withExclusiveTransactionAsync((txn) =>
+      writeSub(txn, { ...r, promoEndDate: null, regularAmount: null, cancelByDate: null, deadlineSetAt: null, payments: [{ date: '2026-12-05', paidOn: '2026-11-02', amount: 20, loggedActual: true }] }),
+    );
+    snap = await loadSnapshot(db);
+    expect(snap.subscriptions[0]).toMatchObject({ promoEndDate: null, regularAmount: null, cancelByDate: null, deadlineSetAt: null });
+    expect(snap.subscriptions[0].payments).toEqual([{ date: '2026-12-05', paidOn: '2026-11-02', amount: 20, loggedActual: true }]);
+    db.raw.exec(`UPDATE subscriptions SET payments = 'not json'`);
+    expect((await loadSnapshot(db)).subscriptions[0].payments).toEqual([]);
+  });
+
+  it('parsePayments keeps only well-formed entries, one per charge date', () => {
+    expect(
+      parsePayments(
+        JSON.stringify([
+          { date: '2026-11-05', paidOn: '2026-11-01', amount: 10 },
+          { date: '2026-11-05', paidOn: '2026-11-02', amount: 11 },
+          { date: 'nope', paidOn: '2026-11-01', amount: 1 },
+          { date: '2026-12-05', paidOn: '2026-11-01', amount: -1 },
+          { date: '2027-01-05', paidOn: '2026-11-01' },
+          null,
+        ]),
+      ),
+    ).toEqual([{ date: '2026-11-05', paidOn: '2026-11-01', amount: 10 }]);
+    expect(parsePayments('{}')).toEqual([]);
+    expect(parsePayments(null)).toEqual([]);
+  });
+});
+
+describe('replaceAllIn (restore from backup)', () => {
+  async function seeded() {
+    const db = nodeDb();
+    await migrate(db);
+    await importDraftsInto(db, [draft({ name: 'Old one', categoryNames: ['Old cat'] }), draft({ name: 'Old two' })], makeId);
+    db.raw.exec(`INSERT INTO settings (key, value) VALUES ('homeCurrency', '"USD"')`);
+    return db;
+  }
+
+  it('replaces every item, category, link and setting', async () => {
+    const db = await seeded();
+    const before = await loadSnapshot(db);
+    const sub = { ...before.subscriptions[0], id: 'new1', name: 'Restored', categoryIds: ['c1'], payments: [{ date: '2026-11-05', paidOn: '2026-11-01', amount: 9 }] };
+    await replaceAllIn(db, {
+      subscriptions: [sub],
+      categories: [{ id: 'c1', name: 'Restored cat' }],
+      settings: { ...before.settings, homeCurrency: 'CAD', leadDays: 5 },
+    });
+    const snap = await loadSnapshot(db);
+    expect(snap.subscriptions.map((x) => x.name)).toEqual(['Restored']);
+    expect(snap.subscriptions[0].categoryIds).toEqual(['c1']);
+    expect(snap.subscriptions[0].payments).toEqual([{ date: '2026-11-05', paidOn: '2026-11-01', amount: 9 }]);
+    expect(snap.categories).toEqual([{ id: 'c1', name: 'Restored cat' }]);
+    expect(snap.settings).toMatchObject({ homeCurrency: 'CAD', leadDays: 5 });
+    expect(count(db, 'subscription_categories')).toBe(1);
+  });
+
+  it('rolls back to exactly the old data when a write fails part-way', async () => {
+    const db = await seeded();
+    const before = await loadSnapshot(db);
+    const s1 = { ...before.subscriptions[0], id: 'n1', categoryIds: [] };
+    // Two categories with the same name (ignoring case) break the unique index mid-restore.
+    await expect(
+      replaceAllIn(db, {
+        subscriptions: [s1],
+        categories: [
+          { id: 'a', name: 'Same' },
+          { id: 'b', name: 'same' },
+        ],
+        settings: before.settings,
+      }),
+    ).rejects.toThrow();
+    expect(await loadSnapshot(db)).toEqual(before);
   });
 });
 

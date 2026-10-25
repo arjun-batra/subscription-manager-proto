@@ -22,6 +22,8 @@ interface StoreValue {
   deleteCategory(id: string): Promise<void>;
   saveSettings(s: Settings): Promise<void>;
   importDrafts(d: ImportDraft[]): Promise<number>;
+  /** Replaces all data with a backup's (all-or-nothing), then reschedules reminders. */
+  restoreAll(s: db.Snapshot): Promise<number>;
   refresh(): Promise<void>;
   /** Home's category filter: null is All. Kept in memory only, so it resets on the next launch. */
   categoryFilter: string | null;
@@ -92,6 +94,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [refresh],
   );
 
+  const restoreAll = useCallback(
+    async (s: db.Snapshot) => {
+      const n = await db.restoreAll(s);
+      // The filter may point at a category the backup doesn't have.
+      setCategoryFilter(null);
+      await refresh();
+      return n;
+    },
+    [refresh],
+  );
+
   const value = useMemo<StoreValue>(
     () => ({
       ready,
@@ -105,11 +118,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteCategory: wrap(db.deleteCategory),
       saveSettings: wrap(db.saveSettings),
       importDrafts: wrap(db.importDrafts),
+      restoreAll,
       refresh,
       categoryFilter,
       setCategoryFilter,
     }),
-    [ready, error, snap, today, health, wrap, refresh, categoryFilter],
+    [ready, error, snap, today, health, wrap, refresh, restoreAll, categoryFilter],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

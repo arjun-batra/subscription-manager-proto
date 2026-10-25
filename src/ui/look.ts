@@ -24,9 +24,67 @@ export function normalizeName(name: string): string {
 }
 
 /**
+ * Words that only describe a plan or tier. After an ambiguous alias (below) only these may follow,
+ * so "Max Ad-Free" and "Prime Monthly" still match but "Max Fitness" and "Prime Gym" don't.
+ */
+export const PLAN_WORDS = new Set(
+  (
+    'premium plus family membership member subscription sub monthly month annual annually yearly year plan pro basic ' +
+    'standard student individual duo ultimate unlimited internet mobile wireless tv video music account ' +
+    'ad ads free with no essential essentials deluxe extra trial gift card pass'
+  ).split(' '),
+);
+
+/**
+ * Single-word aliases that are also ordinary words or other companies' names (Prime Gym,
+ * Max Fitness, Copilot Money, Nitro PDF, Freedom 55, Shaw Academy). These match only as the whole
+ * name, or followed by plan words, or by the few product words listed for them.
+ */
+export const AMBIGUOUS_ALIASES: Record<string, string[]> = {
+  max: [],
+  hbo: ['now', 'go'],
+  prime: [],
+  kindle: [],
+  copilot: [],
+  nitro: [],
+  freedom: ['home'],
+  shaw: ['home'],
+  bell: ['canada', 'mobility', 'fibe'],
+  fibe: [],
+  medium: [],
+  notion: ['ai', 'calendar', 'mail'],
+  zoom: ['workplace', 'one', 'meetings'],
+  slack: ['business', 'enterprise'],
+  sonnet: ['insurance', 'car', 'auto'],
+  crave: ['total'],
+  presto: [],
+  wonderland: ['season'],
+  proton: ['drive', 'pass', 'mail', 'vpn'],
+  gemini: ['advanced', 'ai'],
+  paramount: [],
+  optik: [],
+  twitter: ['blue'],
+};
+
+function aliasMatches(n: string, a: string): boolean {
+  if (n === a) return true;
+  if (!n.startsWith(a + ' ')) return false;
+  if (!Object.prototype.hasOwnProperty.call(AMBIGUOUS_ALIASES, a)) return true;
+  const extra = AMBIGUOUS_ALIASES[a];
+  // Anchored: every following word must be a plan word or one of this alias's product words.
+  return n
+    .slice(a.length + 1)
+    .split(' ')
+    .map((w) => w.replace(/\+$/, '')) // "Business+" reads as "business"
+    .every((w) => !w || PLAN_WORDS.has(w) || extra.includes(w));
+}
+
+/**
  * The brand a subscription name means, or null. An alias matches when it is the whole name or
- * its first words ("Spotify Premium Family" is Spotify; "Maximum Fitness" is not Max).
- * The longest matching alias wins ("Apple TV" over "Apple").
+ * its first words ("Spotify Premium Family" is Spotify; "Maximum Fitness" is not Max). Ambiguous
+ * one-word aliases (AMBIGUOUS_ALIASES) need the whole name, or only plan words after them.
+ * The longest matching alias wins ("Apple TV" over "Apple"). A picked logo always wins over this
+ * (resolveLogo).
  */
 export function matchBrand(name: string): Brand | null {
   const n = normalizeName(name);
@@ -35,7 +93,7 @@ export function matchBrand(name: string): Brand | null {
   for (const brand of BRANDS) {
     for (const alias of brand.aliases) {
       const a = normalizeName(alias);
-      if ((n === a || n.startsWith(a + ' ')) && (!best || a.length > best.len)) best = { brand, len: a.length };
+      if (aliasMatches(n, a) && (!best || a.length > best.len)) best = { brand, len: a.length };
     }
   }
   return best?.brand ?? null;

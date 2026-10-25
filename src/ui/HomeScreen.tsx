@@ -27,12 +27,14 @@ import {
   tint,
 } from '@expo/ui/swift-ui/modifiers';
 import * as Haptics from 'expo-haptics';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert, Linking, Platform, Pressable, ScrollView, Text, useColorScheme, View } from 'react-native';
 
 import { describeCycle, shortDate } from '../domain/dates';
 import { formatMoney } from '../domain/money';
-import { isCompleted, isPlan, isVariable, nextCharge, planStatus, withActual } from '../domain/schedule';
+import { markNextPaid, undoablePayment, unmarkPaid } from '../domain/payments';
+import { nextDeadlineStamp } from '../domain/reminders';
+import { isCompleted, isPlan, isVariable, nextCharge, nextDue, planStatus, withActual } from '../domain/schedule';
 import { categoryIdsOf, computeMonthTotals, computeTotals, filterByCategory } from '../domain/totals';
 import { UNCATEGORIZED_ID, type Subscription } from '../domain/types';
 import { requestPermission } from '../services/notifications';
@@ -40,7 +42,8 @@ import { BrandLogo } from './BrandLogo';
 import { CategoryFilter } from './CategoryFilter';
 import { Button, Card, Row, SectionHeader } from './components';
 import { donutSlices, filterOptions } from './look';
-import { amountLabel, chargeToLog, parseAmount, upcomingRow, type RowModel } from './rows';
+import { amountLabel, chargeToLog, deadlineRows, parseAmount, upcomingRow, type RowModel } from './rows';
+import { SWIPE_COLORS } from './palette';
 import { useStore } from './store';
 import { TotalsCard } from './TotalsCard';
 import { usePalette } from './theme';
@@ -51,7 +54,12 @@ const NATIVE_LIST = Platform.OS === 'ios';
 interface ListItem {
   s: Subscription;
   model: RowModel;
+  /** Rows in the Deadlines section repeat an item, so they need their own key. */
+  key?: string;
 }
+
+/** How long the "Marked paid · Undo" bar stays up. */
+const UNDO_MS = 8000;
 
 export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => void; onAdd: () => void }) {
   const p = usePalette();
@@ -78,7 +86,8 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
     () =>
       shown
         .filter((s) => !s.cancelled && !isCompleted(s, today))
-        .map((s) => ({ s, next: nextCharge(s, today) }))
+        // The next charge still to pay: one marked paid early moves the row on to the next.
+        .map((s) => ({ s, next: nextDue(s, today) ?? nextCharge(s, today) }))
         .sort((a, b) => (a.next < b.next ? -1 : a.next > b.next ? 1 : a.s.name.localeCompare(b.s.name)))
         .map(({ s, next }) => ({ s, model: upcomingRow(s, next, today) })),
     [shown, today],
@@ -99,6 +108,13 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
         },
       };
     });
+  const deadlines: ListItem[] = deadlineRows(shown, today).map((d) => ({ s: d.s, model: d.model, key: `${d.kind}:${d.s.id}` }));
+  const [undo, setUndo] = useState<{ id: string; date: string; text: string } | null>(null);
+  useEffect(() => {
+    if (!undo) return;
+    const t = setTimeout(() => setUndo(null), UNDO_MS);
+    return () => clearTimeout(t);
+  }, [undo]);
   const cancelled: ListItem[] = shown
     .filter((s) => s.cancelled)
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -153,8 +169,82 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
     );
   }
 
+  async function applyPaid(s: Subscription, actual: number | null) {
+    const res = markNextPaid(s, today, { actual });
+    if (!res) return;
+    await store.saveSubscription(res.sub);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    setUndo({
+      id: s.id,
+      date: res.date,
+      text: `${s.name}: ${res.date === today ? 'today’s' : shortDate(res.date, today)} charge marked paid${res.early ? ' early' : ''}`,
+    });
+  }
+
+  /** Marks the next due charge paid. A variable bill can capture what was charged (or skip). */
+  function markPaid(s: Subscription) {
+    const date = nextDue(s, today);
+    if (!date || s.cancelled) return;
+    if (!isVariable(s) || Platform.OS !== 'ios') {
+      void applyPaid(s, null).catch((e) => Alert.alert('Couldn’t save', String(e)));
+      return;
+    }
+    Alert.prompt(
+      `${s.name}: ${shortDate(date, today)}`,
+      `How much did you pay? Leave it blank to use the estimate (${amountLabel(s)}).`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Mark Paid',
+          onPress: (text?: string) => {
+            const typed = (text ?? '').trim();
+            const amount = typed ? parseAmount(typed) : null;
+            if (typed && amount === null) {
+              Alert.alert('That isn’t an amount', 'Enter a number greater than 0, like 84.12, or leave it blank.');
+              return;
+            }
+            void applyPaid(s, amount).catch((e) => Alert.alert('Couldn’t save', String(e)));
+          },
+        },
+      ],
+      'plain-text',
+      '',
+      'decimal-pad',
+    );
+  }
+
+  async function undoPaid(id: string, date: string) {
+    const s = store.subscriptions.find((x) => x.id === id);
+    setUndo(null);
+    if (!s) return;
+    await store.saveSubscription(unmarkPaid(s, date));
+    Haptics.selectionAsync().catch(() => {});
+  }
+
+  /** Context-menu label: "Mark Paid (Nov 5)"; null when there's nothing to pay. */
+  function markPaidLabel(s: Subscription): string | null {
+    if (s.cancelled) return null;
+    const date = nextDue(s, today);
+    return date ? `Mark Paid (${date === today ? 'today' : shortDate(date, today)})` : null;
+  }
+
+  /** The plain list has no context menu: touch and hold opens the same actions. */
+  function moreActions(s: Subscription) {
+    const paidLabel = markPaidLabel(s);
+    const undoable = undoablePayment(s, today);
+    Alert.alert(s.name, undefined, [
+      ...(paidLabel ? [{ text: paidLabel, onPress: () => markPaid(s) }] : []),
+      ...(undoable ? [{ text: `Undo Paid (${shortDate(undoable.date, today)})`, onPress: () => void undoPaid(s.id, undoable.date) }] : []),
+      ...(isVariable(s) && !s.cancelled ? [{ text: 'Log Amount', onPress: () => logAmount(s) }] : []),
+      { text: 'Edit', onPress: () => onEdit(s) },
+      { text: 'Close', style: 'cancel' as const },
+    ]);
+  }
+
   async function setCancelled(s: Subscription, value: boolean) {
-    await store.saveSubscription({ ...s, cancelled: value, updatedAt: new Date().toISOString() });
+    const now = new Date().toISOString();
+    const next = { ...s, cancelled: value, updatedAt: now };
+    await store.saveSubscription({ ...next, deadlineSetAt: nextDeadlineStamp(s, next, now) });
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
   }
 
@@ -192,6 +282,18 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
           </Pressable>
         </View>
       ) : null}
+      {undo ? (
+        <View
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+          style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: p.surface, marginHorizontal: 16, marginTop: 12, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 14 }}
+        >
+          <Text style={{ color: p.text, fontSize: 15, flex: 1 }}>{undo.text}</Text>
+          <Pressable onPress={() => void undoPaid(undo.id, undo.date)} accessibilityRole="button" hitSlop={8}>
+            <Text style={{ color: p.accent, fontSize: 15, fontWeight: '600' }}>Undo</Text>
+          </Pressable>
+        </View>
+      ) : null}
       {options.length > 1 ? (
         <View style={{ marginTop: 12 }}>
           <CategoryFilter options={options} selected={filter} onSelect={setCategoryFilter} />
@@ -212,11 +314,22 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
     );
 
   if (NATIVE_LIST) {
-    const row = ({ s, model }: ListItem) => (
-      <SwipeActions key={s.id}>
+    const row = ({ s, model, key }: ListItem) => {
+      const paidLabel = markPaidLabel(s);
+      const undoable = undoablePayment(s, today);
+      return (
+      <SwipeActions key={key ?? s.id}>
         <ContextMenu>
           <ContextMenu.Items>
             <UIButton label="Edit" systemImage="pencil" onPress={() => onEdit(s)} />
+            {paidLabel ? <UIButton label={paidLabel} systemImage="checkmark.circle" onPress={() => markPaid(s)} /> : null}
+            {undoable ? (
+              <UIButton
+                label={`Undo Paid (${shortDate(undoable.date, today)})`}
+                systemImage="arrow.uturn.backward.circle"
+                onPress={() => void undoPaid(s.id, undoable.date)}
+              />
+            ) : null}
             {isVariable(s) && !s.cancelled ? (
               <UIButton label="Log Amount" systemImage="square.and.pencil" onPress={() => logAmount(s)} />
             ) : null}
@@ -267,21 +380,25 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
           </ContextMenu.Trigger>
         </ContextMenu>
         <SwipeActions.Actions edge="trailing" allowsFullSwipe={false}>
-          <UIButton label="Delete" systemImage="trash" role="destructive" onPress={() => confirmDelete(s)} />
+          <UIButton label="Delete" systemImage="trash" role="destructive" onPress={() => confirmDelete(s)} modifiers={[tint(SWIPE_COLORS.delete)]} />
           <UIButton
             label={s.cancelled ? 'Restore' : 'Cancel'}
             systemImage={s.cancelled ? 'arrow.uturn.backward' : 'xmark.circle'}
             onPress={() => setCancelled(s, !s.cancelled)}
-            modifiers={[tint('orange')]}
+            modifiers={[tint(SWIPE_COLORS.cancel)]}
           />
         </SwipeActions.Actions>
-        {isVariable(s) && !s.cancelled ? (
+        {paidLabel || (isVariable(s) && !s.cancelled) ? (
           <SwipeActions.Actions edge="leading">
-            <UIButton label="Log" systemImage="square.and.pencil" onPress={() => logAmount(s)} modifiers={[tint(p.accent)]} />
+            {paidLabel ? <UIButton label="Paid" systemImage="checkmark.circle" onPress={() => markPaid(s)} modifiers={[tint(SWIPE_COLORS.paid)]} /> : null}
+            {isVariable(s) && !s.cancelled ? (
+              <UIButton label="Log" systemImage="square.and.pencil" onPress={() => logAmount(s)} modifiers={[tint(SWIPE_COLORS.log)]} />
+            ) : null}
           </SwipeActions.Actions>
         ) : null}
       </SwipeActions>
-    );
+      );
+    };
 
     return (
       <View style={{ flex: 1, backgroundColor: p.background }}>
@@ -303,6 +420,7 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
                 active.map(row)
               )}
             </Section>
+            {deadlines.length ? <Section title="Deadlines">{deadlines.map(row)}</Section> : null}
             {completed.length ? <Section title="Completed plans">{completed.map(row)}</Section> : null}
             {cancelled.length ? <Section title="Cancelled">{cancelled.map(row)}</Section> : null}
           </List>
@@ -313,16 +431,16 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
 
   const rnRows = (items: ListItem[]) => (
     <Card>
-      {items.map(({ s, model }, i) => (
+      {items.map(({ s, model, key }, i) => (
         <Row
-          key={s.id}
+          key={key ?? s.id}
           leading={<BrandLogo name={s.name} logo={s.logo} size={32} />}
           title={model.title}
           badge={model.badge}
           subtitle={model.subtitle}
           right={model.right}
           onPress={() => onEdit(s)}
-          onLongPress={isVariable(s) && !s.cancelled ? () => logAmount(s) : undefined}
+          onLongPress={s.cancelled ? undefined : () => moreActions(s)}
           accessibilityLabel={model.accessibilityLabel}
           last={i === items.length - 1}
         />
@@ -348,6 +466,12 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
       ) : (
         rnRows(active)
       )}
+      {deadlines.length ? (
+        <>
+          <SectionHeader>Deadlines</SectionHeader>
+          {rnRows(deadlines)}
+        </>
+      ) : null}
       {completed.length ? (
         <>
           <SectionHeader>Completed plans</SectionHeader>
