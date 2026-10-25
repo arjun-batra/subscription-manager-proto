@@ -20,7 +20,7 @@ export interface SqlDb extends SqlExec {
   withExclusiveTransactionAsync(task: (txn: SqlExec) => Promise<void>): Promise<void>;
 }
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * Brings the schema up to SCHEMA_VERSION. Each step runs in its own exclusive transaction
@@ -76,6 +76,15 @@ export async function migrate(db: SqlDb): Promise<void> {
       await txn.execAsync('PRAGMA user_version = 2');
     });
   }
+  if (version < 3) {
+    // Free trials and instalment plans. Both columns are nullable, so existing rows stay
+    // ordinary subscriptions. Same crash-safety as v2: both ALTERs and the bump in one step.
+    await db.withExclusiveTransactionAsync(async (txn) => {
+      await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN trial_end_date TEXT');
+      await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN total_payments INTEGER');
+      await txn.execAsync('PRAGMA user_version = 3');
+    });
+  }
 }
 
 interface SubRow {
@@ -87,6 +96,8 @@ interface SubRow {
   cycle_every: number;
   anchor_date: string;
   start_date: string | null;
+  trial_end_date: string | null;
+  total_payments: number | null;
   notes: string;
   manage_url: string;
   reminders_enabled: number;
@@ -127,6 +138,8 @@ export async function loadSnapshot(db: SqlExec): Promise<Snapshot> {
       cycle: { unit: r.cycle_unit, every: r.cycle_every },
       anchorDate: r.anchor_date,
       startDate: r.start_date ?? null,
+      trialEndDate: r.trial_end_date ?? null,
+      totalPayments: r.total_payments ?? null,
       categoryIds: byId.get(r.id) ?? [],
       notes: r.notes,
       manageUrl: r.manage_url,
@@ -142,12 +155,13 @@ export async function loadSnapshot(db: SqlExec): Promise<Snapshot> {
 
 export async function writeSub(db: SqlExec, s: Subscription): Promise<void> {
   await db.runAsync(
-    `INSERT INTO subscriptions (id, name, amount, currency, cycle_unit, cycle_every, anchor_date, start_date, notes,
-       manage_url, reminders_enabled, cancelled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO subscriptions (id, name, amount, currency, cycle_unit, cycle_every, anchor_date, start_date,
+       trial_end_date, total_payments, notes, manage_url, reminders_enabled, cancelled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET name = excluded.name, amount = excluded.amount, currency = excluded.currency,
        cycle_unit = excluded.cycle_unit, cycle_every = excluded.cycle_every, anchor_date = excluded.anchor_date,
-       start_date = excluded.start_date, notes = excluded.notes, manage_url = excluded.manage_url,
+       start_date = excluded.start_date, trial_end_date = excluded.trial_end_date,
+       total_payments = excluded.total_payments, notes = excluded.notes, manage_url = excluded.manage_url,
        reminders_enabled = excluded.reminders_enabled, cancelled = excluded.cancelled, updated_at = excluded.updated_at`,
     s.id,
     s.name,
@@ -157,6 +171,8 @@ export async function writeSub(db: SqlExec, s: Subscription): Promise<void> {
     s.cycle.every,
     s.anchorDate,
     s.startDate ?? null,
+    s.trialEndDate ?? null,
+    s.totalPayments ?? null,
     s.notes,
     s.manageUrl,
     s.remindersEnabled ? 1 : 0,
@@ -209,6 +225,8 @@ export async function importDraftsInto(
         cycle: d.cycle,
         anchorDate: d.anchorDate,
         startDate: d.startDate,
+        trialEndDate: d.trialEndDate,
+        totalPayments: d.totalPayments,
         categoryIds,
         notes: d.notes,
         manageUrl: d.manageUrl,

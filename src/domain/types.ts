@@ -28,6 +28,16 @@ export interface Subscription {
    * charge is projected backwards as "paid". Null or absent means it was already running.
    */
   startDate?: LocalDate | null;
+  /**
+   * Free trial (subscriptions only): the day the trial ends and the first paid charge happens,
+   * at `amount` (the price after the trial). Nothing is charged before it. Null or absent: no trial.
+   */
+  trialEndDate?: LocalDate | null;
+  /**
+   * Instalment plan: total number of payments of `amount`, the first on `startDate`.
+   * The plan stops after the last payment. Null or absent: an ordinary subscription.
+   */
+  totalPayments?: number | null;
   categoryIds: string[];
   notes: string;
   manageUrl: string;

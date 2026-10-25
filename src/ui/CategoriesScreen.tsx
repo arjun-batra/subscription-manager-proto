@@ -12,8 +12,11 @@ import { usePalette } from './theme';
 export function CategoriesScreen() {
   const p = usePalette();
   const store = useStore();
-  const { subscriptions, categories, settings } = store;
-  const totals = useMemo(() => computeTotals(subscriptions, categories, settings), [subscriptions, categories, settings]);
+  const { subscriptions, categories, settings, today } = store;
+  const totals = useMemo(
+    () => computeTotals(subscriptions, categories, settings, today),
+    [subscriptions, categories, settings, today],
+  );
   const [editing, setEditing] = useState<Category | null>(null);
   const [name, setName] = useState('');
   const [error, setError] = useState('');

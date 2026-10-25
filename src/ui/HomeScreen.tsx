@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { Linking, Pressable, ScrollView, Text, View } from 'react-native';
 
 import { describeCycle, shortDate } from '../domain/dates';
-import { nextCharge } from '../domain/schedule';
+import { describeTrialLeft, isCompleted, isPlan, nextCharge, planStatus, trialDaysLeft } from '../domain/schedule';
 import { formatMoney } from '../domain/money';
 import { computeMonthTotals, computeTotals } from '../domain/totals';
 import type { Subscription } from '../domain/types';
@@ -16,18 +16,45 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
   const { subscriptions, categories, settings, today, health, refresh } = useStore();
   const home = settings.homeCurrency;
   const month = useMemo(() => computeMonthTotals(subscriptions, settings, today), [subscriptions, settings, today]);
-  const totals = useMemo(() => computeTotals(subscriptions, categories, settings), [subscriptions, categories, settings]);
+  const totals = useMemo(
+    () => computeTotals(subscriptions, categories, settings, today),
+    [subscriptions, categories, settings, today],
+  );
   const missingRate = [...new Map([...totals.missingRate, ...month.missingRate].map((s) => [s.id, s])).values()];
 
   const active = useMemo(
     () =>
       subscriptions
-        .filter((s) => !s.cancelled)
+        .filter((s) => !s.cancelled && !isCompleted(s, today))
         .map((s) => ({ s, next: nextCharge(s, today) }))
         .sort((a, b) => (a.next < b.next ? -1 : a.next > b.next ? 1 : a.s.name.localeCompare(b.s.name))),
     [subscriptions, today],
   );
   const cancelled = subscriptions.filter((s) => s.cancelled).sort((a, b) => a.name.localeCompare(b.name));
+  const completed = subscriptions
+    .filter((s) => !s.cancelled && isCompleted(s, today))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  /** What a row says: trial countdown, "N of M paid", or the plain renewal line. */
+  function describe(s: Subscription, next: string): { subtitle: string; badge?: { label: string; tone: 'trial' | 'neutral' } } {
+    const when = next === today ? 'Today' : shortDate(next, today);
+    const off = s.remindersEnabled ? '' : ' · reminder off';
+    const trialLeft = trialDaysLeft(s, today);
+    if (trialLeft !== null) {
+      return {
+        subtitle: `Trial ${describeTrialLeft(trialLeft)} · then ${formatMoney(s.amount, s.currency)} ${describeCycle(s.cycle).toLowerCase()}${off}`,
+        badge: { label: 'Trial', tone: 'trial' },
+      };
+    }
+    const plan = planStatus(s, today);
+    if (plan) {
+      return {
+        subtitle: `${when} · ${plan.paid} of ${plan.total} paid · ${formatMoney(plan.remainingAmount, s.currency)} left${off}`,
+        badge: { label: 'Plan', tone: 'neutral' },
+      };
+    }
+    return { subtitle: `${when} · ${describeCycle(s.cycle)}${off}` };
+  }
   const progress = month.thisMonth > 0 ? month.paidSoFar / month.thisMonth : 0;
 
   async function fixReminders() {
@@ -91,6 +118,11 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
           <Text style={{ color: p.text, fontSize: 15 }}>Average {formatMoney(totals.overall.monthly, home)}/mo</Text>
           <Text style={{ color: p.text, fontSize: 15 }}>{formatMoney(totals.overall.yearly, home)}/yr</Text>
         </View>
+        {totals.planCount ? (
+          <Text style={{ color: p.secondaryText, fontSize: 15, marginTop: 8 }}>
+            Left on {totals.planCount} payment plan{totals.planCount === 1 ? '' : 's'}: {formatMoney(totals.plansRemaining, home)}
+          </Text>
+        ) : null}
         {missingRate.length ? (
           <Text style={{ color: p.danger, fontSize: 14, marginTop: 10 }}>
             Not in totals: {missingRate.map((s) => `${s.name} (${s.currency})`).join(', ')}. Add a rate in Settings.
@@ -111,19 +143,46 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
         </Card>
       ) : (
         <Card>
-          {active.map(({ s, next }, i) => (
-            <Row
-              key={s.id}
-              title={s.name}
-              subtitle={`${next === today ? 'Today' : shortDate(next, today)} · ${describeCycle(s.cycle)}${s.remindersEnabled ? '' : ' · reminder off'}`}
-              right={formatMoney(s.amount, s.currency)}
-              onPress={() => onEdit(s)}
-              accessibilityLabel={`${s.name}, ${formatMoney(s.amount, s.currency)}, next charge ${shortDate(next, today)}`}
-              last={i === active.length - 1}
-            />
-          ))}
+          {active.map(({ s, next }, i) => {
+            const d = describe(s, next);
+            const trialLeft = trialDaysLeft(s, today);
+            return (
+              <Row
+                key={s.id}
+                title={s.name}
+                badge={d.badge}
+                subtitle={d.subtitle}
+                right={trialLeft !== null && trialLeft > 0 ? 'Free' : formatMoney(s.amount, s.currency)}
+                onPress={() => onEdit(s)}
+                accessibilityLabel={`${s.name}${d.badge ? `, ${d.badge.label}` : ''}, ${d.subtitle}`}
+                last={i === active.length - 1}
+              />
+            );
+          })}
         </Card>
       )}
+
+      {completed.length ? (
+        <>
+          <SectionHeader>Completed plans</SectionHeader>
+          <Card>
+            {completed.map((s, i) => {
+              const plan = planStatus(s, today)!;
+              return (
+                <Row
+                  key={s.id}
+                  title={s.name}
+                  badge={{ label: 'Completed', tone: 'neutral' }}
+                  subtitle={`All ${plan.total} paid · last payment ${shortDate(plan.lastPayment, today)}`}
+                  right={formatMoney(plan.total * s.amount, s.currency)}
+                  onPress={() => onEdit(s)}
+                  last={i === completed.length - 1}
+                />
+              );
+            })}
+          </Card>
+        </>
+      ) : null}
 
       {cancelled.length ? (
         <>
@@ -133,7 +192,7 @@ export function HomeScreen({ onEdit, onAdd }: { onEdit: (s: Subscription) => voi
               <Row
                 key={s.id}
                 title={s.name}
-                subtitle={describeCycle(s.cycle)}
+                subtitle={isPlan(s) ? `Payment plan · ${describeCycle(s.cycle)}` : describeCycle(s.cycle)}
                 right={formatMoney(s.amount, s.currency)}
                 onPress={() => onEdit(s)}
                 last={i === cancelled.length - 1}

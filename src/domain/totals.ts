@@ -1,6 +1,6 @@
-import { monthBounds } from './dates';
+import { monthBounds, toLocalDate } from './dates';
 import { toHome } from './money';
-import { chargesBetween } from './schedule';
+import { chargesBetween, inTrial, isCompleted, planStatus } from './schedule';
 import {
   UNCATEGORIZED_ID,
   UNCATEGORIZED_NAME,
@@ -52,6 +52,10 @@ export interface TotalsResult {
   missingRate: Subscription[];
   /** True when category totals add up to more than the overall total (multi-category items). */
   categorySumExceedsOverall: boolean;
+  /** What's left to pay on unfinished instalment plans, in the home currency (plans with a rate). */
+  plansRemaining: number;
+  /** Unfinished plans counted in plansRemaining. */
+  planCount: number;
 }
 
 const active = (subs: Subscription[]) => subs.filter((s) => !s.cancelled);
@@ -60,11 +64,14 @@ const active = (subs: Subscription[]) => subs.filter((s) => !s.cancelled);
  * Normalized totals overall and per category, in the home currency.
  * Each subscription counts once overall and in full in each of its categories.
  * Items with no exchange rate are excluded and listed in missingRate (Decision D2).
+ * A trial counts as 0 until its end date, then at its post-trial price (FR-004, FR-007).
+ * An instalment plan counts while payments remain, and drops out once it's completed.
  */
 export function computeTotals(
   subs: Subscription[],
   categories: Category[],
   settings: Settings,
+  today: LocalDate = toLocalDate(new Date()),
 ): TotalsResult {
   const known = new Set(categories.map((c) => c.id));
   const catIds = (sub: Subscription) => {
@@ -78,9 +85,11 @@ export function computeTotals(
 
   const overall: NormalizedTotal = { monthly: 0, yearly: 0, count: 0 };
   const missingRate: Subscription[] = [];
+  let plansRemaining = 0;
+  let planCount = 0;
 
-  for (const sub of active(subs)) {
-    const monthly = toHome(monthlyEquivalent(sub), sub.currency, settings);
+  for (const sub of active(subs).filter((s) => !isCompleted(s, today))) {
+    const monthly = toHome(inTrial(sub, today) ? 0 : monthlyEquivalent(sub), sub.currency, settings);
     if (monthly === null) {
       missingRate.push(sub);
       for (const id of catIds(sub)) missingPerCat.set(id, [...(missingPerCat.get(id) ?? []), sub]);
@@ -89,6 +98,11 @@ export function computeTotals(
     overall.monthly += monthly;
     overall.yearly += monthly * 12;
     overall.count += 1;
+    const plan = planStatus(sub, today);
+    if (plan) {
+      plansRemaining += toHome(plan.remainingAmount, sub.currency, settings) ?? 0;
+      planCount += 1;
+    }
 
     for (const id of catIds(sub)) {
       const t = perCat.get(id)!;
@@ -120,6 +134,8 @@ export function computeTotals(
     categories: result,
     missingRate,
     categorySumExceedsOverall: sum - overall.monthly > 1e-9,
+    plansRemaining,
+    planCount,
   };
 }
 
@@ -141,7 +157,10 @@ export interface MonthTotals {
   missingRate: Subscription[];
 }
 
-/** Current-calendar-month totals for the device's local "today". */
+/**
+ * Current-calendar-month totals for the device's local "today". Trials add nothing before their
+ * end date (the first paid charge counts on that day); plans stop after their last payment.
+ */
 export function computeMonthTotals(
   subs: Subscription[],
   settings: Settings,

@@ -11,6 +11,7 @@ import {
   migrate,
   saveCategoryIn,
   SCHEMA_VERSION,
+  writeSub,
   type SqlDb, type SqlExec, type SqlParam } from './sql';
 
 interface Stmt {
@@ -90,6 +91,8 @@ const draft = (over: Partial<ImportDraft> = {}): ImportDraft => ({
   cancelled: false,
   remindersEnabled: true,
   startDate: null,
+  trialEndDate: null,
+  totalPayments: null,
   ...over,
 });
 
@@ -215,6 +218,104 @@ describe('migrations', () => {
     expect(userVersion(db)).toBe(SCHEMA_VERSION);
     expect(columns(db).filter((c) => c === 'start_date')).toHaveLength(1);
     expect((await loadSnapshot(db)).subscriptions.map((x) => x.name)).toEqual(['Netflix']);
+  });
+});
+
+const V2_SCHEMA = `${V1_SCHEMA.replace('PRAGMA user_version = 1;', '')}
+  ALTER TABLE subscriptions ADD COLUMN start_date TEXT;
+  INSERT INTO subscriptions (id, name, amount, currency, cycle_unit, cycle_every, anchor_date, start_date, notes,
+    manage_url, reminders_enabled, cancelled, created_at, updated_at)
+    VALUES ('s2','Gym',40,'CAD','month',1,'2026-11-01','2026-11-01','','',0,1,'t','t');
+  INSERT INTO categories VALUES ('c1','Health');
+  INSERT INTO subscription_categories VALUES ('s2','c1');
+  INSERT INTO settings VALUES ('homeCurrency','"USD"');
+  PRAGMA user_version = 2;
+`;
+
+describe('migration to v3 (trials and plans)', () => {
+  it('upgrades a version 2 database and keeps every row, link and setting', async () => {
+    const db = nodeDb();
+    db.raw.exec(V2_SCHEMA);
+    await migrate(db);
+    expect(userVersion(db)).toBe(3);
+    expect(columns(db)).toEqual(expect.arrayContaining(['trial_end_date', 'total_payments']));
+    const snap = await loadSnapshot(db);
+    expect(snap.settings.homeCurrency).toBe('USD');
+    expect(snap.subscriptions.sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+      expect.objectContaining({ id: 's1', name: 'Netflix', startDate: null, trialEndDate: null, totalPayments: null }),
+      expect.objectContaining({
+        id: 's2',
+        startDate: '2026-11-01',
+        cancelled: true,
+        remindersEnabled: false,
+        categoryIds: ['c1'],
+        trialEndDate: null,
+        totalPayments: null,
+      }),
+    ]);
+  });
+
+  it('upgrades a version 1 database straight to v3', async () => {
+    const db = nodeDb();
+    db.raw.exec(V1_SCHEMA);
+    await migrate(db);
+    expect(userVersion(db)).toBe(3);
+    expect((await loadSnapshot(db)).subscriptions.map((x) => x.name)).toEqual(['Netflix']);
+  });
+
+  it('rolls the v3 step back if the app dies before user_version is bumped', async () => {
+    const crashing = nodeDb({ failOnExec: /user_version = 3/ });
+    crashing.raw.exec(V2_SCHEMA);
+    await expect(migrate(crashing)).rejects.toThrow('app killed (simulated)');
+    expect(userVersion(crashing)).toBe(2);
+    expect(columns(crashing)).not.toContain('trial_end_date');
+    expect(columns(crashing)).not.toContain('total_payments');
+  });
+
+  it('rolls back a crash between the two ALTERs, then retries without "duplicate column name"', async () => {
+    const db = nodeDb();
+    db.raw.exec(V2_SCHEMA);
+    const first: SqlDb = {
+      ...db,
+      async withExclusiveTransactionAsync(task) {
+        return db.withExclusiveTransactionAsync(async (txn) => {
+          await task({
+            ...txn,
+            async execAsync(source: string) {
+              if (/total_payments/.test(source)) throw new Error('app killed (simulated)');
+              await txn.execAsync(source);
+            },
+          });
+        });
+      },
+    };
+    await expect(migrate(first)).rejects.toThrow('app killed (simulated)');
+    expect(userVersion(db)).toBe(2);
+    expect(columns(db)).not.toContain('trial_end_date');
+    await migrate(db);
+    expect(userVersion(db)).toBe(3);
+    expect(columns(db).filter((c) => c === 'trial_end_date')).toHaveLength(1);
+    expect((await loadSnapshot(db)).subscriptions).toHaveLength(2);
+  });
+
+  it('saves and loads a trial and a plan, and imports them', async () => {
+    const db = nodeDb();
+    await migrate(db);
+    await importDraftsInto(
+      db,
+      [
+        draft({ name: 'Trial', trialEndDate: '2026-11-05' }),
+        draft({ name: 'Phone', amount: 50, startDate: '2026-06-10', anchorDate: '2026-11-10', totalPayments: 12 }),
+      ],
+      makeId,
+    );
+    const snap = await loadSnapshot(db);
+    expect(snap.subscriptions.find((s) => s.name === 'Trial')).toMatchObject({ trialEndDate: '2026-11-05', totalPayments: null });
+    expect(snap.subscriptions.find((s) => s.name === 'Phone')).toMatchObject({ totalPayments: 12, startDate: '2026-06-10', trialEndDate: null });
+    // Editing clears the trial (upsert writes the new columns too).
+    const t = snap.subscriptions.find((s) => s.name === 'Trial')!;
+    await db.withExclusiveTransactionAsync((txn) => writeSub(txn, { ...t, trialEndDate: null }));
+    expect((await loadSnapshot(db)).subscriptions.find((s) => s.name === 'Trial')!.trialEndDate).toBeNull();
   });
 });
 

@@ -1,5 +1,6 @@
 import { describeCycle, isValidCycle, isValidLocalDate } from './dates';
 import { isValidCurrency } from './money';
+import { MAX_PLAN_PAYMENTS } from './schedule';
 import type { Category, Cycle, LocalDate, Subscription } from './types';
 
 /** RFC 4180-style parser: quoted fields, "" escapes, CRLF/LF, optional BOM. */
@@ -51,7 +52,9 @@ const HEADER_ALIASES: Record<string, string[]> = {
   manageUrl: ['manage url', 'manage_url', 'url', 'link'],
   status: ['status'],
   reminders: ['reminders', 'reminder'],
-  start: ['first charge date', 'start date', 'first charge'],
+  start: ['first charge date', 'start date', 'first charge', 'first payment date'],
+  trial: ['trial end date', 'trial end', 'trial ends'],
+  payments: ['total payments', 'number of payments', 'payments'],
 };
 const REQUIRED = ['name', 'amount', 'currency', 'cycle', 'next'] as const;
 const LABEL: Record<string, string> = {
@@ -74,6 +77,8 @@ export const CSV_COLUMNS = [
   'status',
   'reminders',
   'first charge date',
+  'trial end date',
+  'total payments',
 ];
 
 const FORMULA_START = /^[=+\-@\t\r]/;
@@ -126,6 +131,10 @@ export interface ImportDraft {
   remindersEnabled: boolean;
   /** Set when the file marks this date as the first charge (nothing paid before it). */
   startDate: LocalDate | null;
+  /** Free trial end (the first paid charge); `amount` is the price after the trial. */
+  trialEndDate: LocalDate | null;
+  /** Instalment plan: number of payments, the first on startDate (or the next charge date). */
+  totalPayments: number | null;
 }
 
 export type RowStatus = 'valid' | 'duplicate' | 'invalid';
@@ -191,6 +200,17 @@ export function previewImport(text: string, existing: Subscription[]): ImportPre
     else if (startDate && isValidLocalDate(anchorDate) && startDate > anchorDate) {
       problems.push("first charge date can't be after the next charge date");
     }
+    const trialEnd = get(r, 'trial');
+    if (trialEnd && !isValidLocalDate(trialEnd)) problems.push('trial end date must be YYYY-MM-DD');
+    else if (trialEnd && isValidLocalDate(anchorDate) && anchorDate < trialEnd) {
+      problems.push("next charge date can't be before the trial end date");
+    }
+    const paymentsRaw = get(r, 'payments');
+    const totalPayments = paymentsRaw ? Number(paymentsRaw) : null;
+    if (paymentsRaw && (!/^\d+$/.test(paymentsRaw) || totalPayments! < 1 || totalPayments! > MAX_PLAN_PAYMENTS)) {
+      problems.push(`total payments must be a whole number from 1 to ${MAX_PLAN_PAYMENTS}`);
+    }
+    if (trialEnd && paymentsRaw) problems.push("a payment plan can't have a free trial");
     if (problems.length || !cycle) {
       return { line, status: 'invalid', reason: problems.join('; '), checked: false };
     }
@@ -209,6 +229,8 @@ export function previewImport(text: string, existing: Subscription[]): ImportPre
       cancelled: status === 'cancelled' || status === 'canceled',
       remindersEnabled: !['off', 'no', 'false'].includes(rem),
       startDate: startDate || null,
+      trialEndDate: trialEnd || null,
+      totalPayments,
     };
     const key = duplicateKey(name, amount, cycle);
     if (seen.has(key)) {
@@ -261,6 +283,8 @@ export function toCsv(subs: Subscription[], categories: Category[]): string {
         s.cancelled ? 'cancelled' : 'active',
         s.remindersEnabled ? 'on' : 'off',
         s.startDate ?? '',
+        s.trialEndDate ?? '',
+        s.totalPayments ? String(s.totalPayments) : '',
       ]
         .map(esc)
         .join(','),
@@ -271,4 +295,6 @@ export function toCsv(subs: Subscription[], categories: Category[]): string {
 
 export const CSV_TEMPLATE =
   CSV_COLUMNS.join(',') +
-  '\r\nNetflix,16.49,CAD,monthly,2026-11-05,Streaming,Family plan,https://www.netflix.com/account,active,on,\r\n';
+  '\r\nNetflix,16.49,CAD,monthly,2026-11-05,Streaming,Family plan,https://www.netflix.com/account,active,on,,,\r\n' +
+  'Phone,45,CAD,monthly,2026-11-10,Phone,Paying off the phone,,active,on,2026-03-10,,24\r\n' +
+  'Trial app,9.99,CAD,monthly,2026-12-01,,Free trial,,active,on,,2026-12-01,\r\n';
