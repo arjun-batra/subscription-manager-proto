@@ -136,6 +136,32 @@ describe('toCsv', () => {
     expect(csv.split('\r\n')[1].startsWith("'=cmd|calc,")).toBe(true);
   });
 
+  it("keeps a value's own leading apostrophe through export and import", () => {
+    expect(esc("'-quoted")).toBe("''-quoted");
+    expect(esc("''=x")).toBe("'''=x");
+    expect(esc("'tis")).toBe("'tis");
+    const names = ["'-quoted", "''=x", "'tis", "'", '-5 off'];
+    const p = previewImport(toCsv(names.map((name) => sub({ name })), []), []);
+    if (!p.ok) throw new Error(p.error);
+    expect(p.rows.map((r) => r.draft?.name)).toEqual(names);
+  });
+
+  it('rejects a first charge date after the next charge date', () => {
+    const p = previewImport(
+      'name,amount,currency,cycle,next charge date,first charge date\n' +
+        'Late,1,CAD,monthly,2026-11-01,2026-12-01\n' +
+        'Same,1,CAD,monthly,2026-11-01,2026-11-01\n' +
+        'Earlier,1,CAD,monthly,2026-11-01,2026-10-01',
+      [],
+    );
+    if (!p.ok) throw new Error(p.error);
+    expect(p.rows.map((r) => [r.status, r.reason ?? ''])).toEqual([
+      ['invalid', "first charge date can't be after the next charge date"],
+      ['valid', ''],
+      ['valid', ''],
+    ]);
+  });
+
   it('rejects unknown status or reminders values', () => {
     const p = previewImport('name,amount,currency,cycle,next charge date,status,reminders\nA,1,CAD,monthly,2026-11-01,paused,maybe', []);
     expect(p.ok && p.rows[0]).toMatchObject({ status: 'invalid', reason: 'status must be active or cancelled; reminders must be on or off' });

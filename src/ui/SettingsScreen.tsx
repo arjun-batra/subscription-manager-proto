@@ -97,6 +97,9 @@ export function SettingsScreen({ onPreview }: { onPreview: (rows: PreviewRow[]) 
                 1 {code} = {settings.rates[code] === undefined ? '?' : ''}
               </Text>
               <TextInput
+                // Uncontrolled, so the key carries everything the default depends on: a home
+                // currency change (which clears rates) or a saved rate remounts the field.
+                key={`${code}:${settings.homeCurrency}:${settings.rates[code] ?? ''}`}
                 defaultValue={settings.rates[code] === undefined ? '' : String(settings.rates[code])}
                 onEndEditing={(e) => setRate(code, e.nativeEvent.text)}
                 keyboardType="decimal-pad"

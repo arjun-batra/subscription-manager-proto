@@ -16,7 +16,7 @@ This is a **Prototype-track** Expo app (one week, $0). Keep it light: ship worki
 5. **Reminders stay within iOS's 64 pending limit**: at most `RENEWAL_BUDGET` (60) renewal reminders plus the test one.
 6. **Accessibility:** new colours go in `src/ui/palette.ts` and must pass the WCAG AA test in both light and dark.
 7. **Never claim it works without running it.** Before you push: `npx expo lint`, `npx tsc --noEmit`, `npx jest`,
-   `npm run check:no-network`, and `npx expo export --platform ios`. Device-only behaviour (notifications firing,
+   `npm run check:no-network`, `npm run check:expo-go`, and `npx expo export --platform ios`. Device-only behaviour (notifications firing,
    persistence across launches) must be checked on the iPhone and reported as such.
 
 ## Workflow

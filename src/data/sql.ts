@@ -22,14 +22,20 @@ export interface SqlDb extends SqlExec {
 
 export const SCHEMA_VERSION = 2;
 
-export async function migrate(db: SqlExec): Promise<void> {
+/**
+ * Brings the schema up to SCHEMA_VERSION. Each step runs in its own exclusive transaction
+ * together with its `user_version` bump (SQLite DDL and user_version are transactional), so
+ * a crash mid-step rolls back to the previous version and the step simply runs again.
+ */
+export async function migrate(db: SqlDb): Promise<void> {
   const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
   const version = row?.user_version ?? 0;
   if (version >= SCHEMA_VERSION) return;
+  // journal_mode can't change inside a transaction, so it goes first, on its own.
+  await db.execAsync('PRAGMA journal_mode = WAL');
   if (version < 1) {
-    await db.execAsync(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA foreign_keys = ON;
+    await db.withExclusiveTransactionAsync(async (txn) => {
+      await txn.execAsync(`
       CREATE TABLE IF NOT EXISTS subscriptions (
         id TEXT PRIMARY KEY NOT NULL,
         name TEXT NOT NULL,
@@ -59,13 +65,17 @@ export async function migrate(db: SqlExec): Promise<void> {
         key TEXT PRIMARY KEY NOT NULL,
         value TEXT NOT NULL
       );
-    `);
+      `);
+      await txn.execAsync('PRAGMA user_version = 1');
+    });
   }
   if (version < 2) {
     // First charge date for new subscriptions (no backwards-projected "paid" charge).
-    await db.execAsync('ALTER TABLE subscriptions ADD COLUMN start_date TEXT');
+    await db.withExclusiveTransactionAsync(async (txn) => {
+      await txn.execAsync('ALTER TABLE subscriptions ADD COLUMN start_date TEXT');
+      await txn.execAsync('PRAGMA user_version = 2');
+    });
   }
-  await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
 
 interface SubRow {
@@ -210,4 +220,25 @@ export async function importDraftsInto(
     }
   });
   return drafts.length;
+}
+
+export class DuplicateCategoryError extends Error {}
+
+/** Creates or renames a category; names are unique ignoring case. One exclusive transaction. */
+export async function saveCategoryIn(db: SqlDb, c: { id: string; name: string }): Promise<void> {
+  const name = c.name.trim();
+  if (!name) throw new Error('Name is required');
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    const clash = await txn.getFirstAsync<{ id: string }>(
+      'SELECT id FROM categories WHERE name = ? COLLATE NOCASE AND id <> ?',
+      name,
+      c.id,
+    );
+    if (clash) throw new DuplicateCategoryError(`“${name}” already exists`);
+    await txn.runAsync(
+      'INSERT INTO categories (id, name) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name',
+      c.id,
+      name,
+    );
+  });
 }

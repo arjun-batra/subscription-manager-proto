@@ -2,7 +2,7 @@ import * as SQLite from 'expo-sqlite';
 
 import type { ImportDraft } from '../domain/csv';
 import type { Category, Settings, Subscription } from '../domain/types';
-import { importDraftsInto, loadSnapshot, migrate, writeSub, type Snapshot, type SqlDb } from './sql';
+import { importDraftsInto, loadSnapshot, migrate, saveCategoryIn, writeSub, type Snapshot, type SqlDb } from './sql';
 
 export type { Snapshot } from './sql';
 
@@ -48,24 +48,10 @@ export async function deleteSubscription(id: string): Promise<void> {
   });
 }
 
-export class DuplicateCategoryError extends Error {}
+export { DuplicateCategoryError } from './sql';
 
-/** Category names are trimmed and unique regardless of case. */
 export async function saveCategory(c: Category): Promise<void> {
-  const db = await sqlDb();
-  const name = c.name.trim();
-  if (!name) throw new Error('Name is required');
-  const clash = await db.getFirstAsync<{ id: string }>(
-    'SELECT id FROM categories WHERE name = ? COLLATE NOCASE AND id <> ?',
-    name,
-    c.id,
-  );
-  if (clash) throw new DuplicateCategoryError(`“${name}” already exists`);
-  await db.runAsync(
-    'INSERT INTO categories (id, name) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name',
-    c.id,
-    name,
-  );
+  await saveCategoryIn(await sqlDb(), c);
 }
 
 /** Deletes only the category and its links; subscriptions are kept. */
