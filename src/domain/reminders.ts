@@ -1,6 +1,15 @@
 import { addDays, atLocalTime, describeCycle, firstIndexOnOrAfter, occurrence, toLocalDate } from './dates';
 import { formatMoney } from './money';
-import { firstChargeDate, hasTrial, isPlan, minCycleDays, paymentNumber, planEndDate } from './schedule';
+import {
+  expectedAmount,
+  firstChargeDate,
+  hasTrial,
+  isPlan,
+  isVariable,
+  minCycleDays,
+  paymentNumber,
+  planEndDate,
+} from './schedule';
 import type { LocalDate, Settings, Subscription } from './types';
 
 /** iOS keeps at most 64 pending local notifications per app. */
@@ -21,6 +30,11 @@ export const OWNED_PREFIXES = [REMINDER_PREFIX, PAYMENT_PREFIX, TRIAL_PREFIX];
 export const TEST_ID = 'test-notification';
 /** Trial reminders fire this many days before the trial ends (FR-010). */
 export const TRIAL_LEAD_DAYS = [3, 1];
+/**
+ * T1: a trial saved too late for its 1-day reminder still gets one notice, this long after the
+ * save (as long as the trial hasn't ended). Anchored to updatedAt so the id stays stable across syncs.
+ */
+export const TRIAL_CATCH_UP_MS = 60_000;
 
 export type ReminderKind = 'renewal' | 'payment' | 'trial';
 
@@ -75,7 +89,8 @@ function build(
 function reminderFor(sub: Subscription, chargeDate: LocalDate, settings: Settings): PlannedReminder {
   const fireAt = atLocalTime(addDays(chargeDate, -settings.leadDays), settings.reminderHour);
   const when = whenText(settings.leadDays);
-  const money = formatMoney(sub.amount, sub.currency);
+  // Variable bills say "about" and use the current estimate (average of the last 3 actuals).
+  const money = `${isVariable(sub) ? 'about ' : ''}${formatMoney(expectedAmount(sub), sub.currency)}`;
   if (isPlan(sub)) {
     const n = paymentNumber(sub, chargeDate);
     const total = sub.totalPayments!;
@@ -90,17 +105,47 @@ function reminderFor(sub: Subscription, chargeDate: LocalDate, settings: Setting
   return build('renewal', sub, chargeDate, fireAt, `${sub.name} renews ${when}`, `${money} on ${chargeDate}`);
 }
 
-/** FR-010: 3 days and 1 day before the trial ends, at the reminder hour; only those still ahead. */
+/**
+ * FR-010: 3 days and 1 day before the trial ends, at the reminder hour; only those still ahead.
+ * T1: when the item was saved after the last of those times and the trial hasn't ended yet, one
+ * catch-up notice fires a minute after the save instead ("ends tomorrow" / "ends today").
+ */
 export function trialReminders(sub: Subscription, settings: Settings, now: Date): PlannedReminder[] {
   if (sub.cancelled || !sub.remindersEnabled || !hasTrial(sub)) return [];
   const end = sub.trialEndDate!;
-  const after = `${formatMoney(sub.amount, sub.currency)} ${describeCycle(sub.cycle).toLowerCase()}`;
-  return TRIAL_LEAD_DAYS.map((days) => {
+  const price = `${isVariable(sub) ? 'about ' : ''}${formatMoney(expectedAmount(sub), sub.currency)}`;
+  const after = `${price} ${describeCycle(sub.cycle).toLowerCase()}`;
+  const body = `Cancel before ${end} if you don’t want it. After that it’s ${after}.`;
+  const scheduled = TRIAL_LEAD_DAYS.map((days) => {
     const fireAt = atLocalTime(addDays(end, -days), settings.reminderHour);
-    const title = `${sub.name} free trial ends ${whenText(days)}`;
-    const body = `Cancel before ${end} if you don’t want it. After that it’s ${after}.`;
-    return build('trial', sub, end, fireAt, title, body);
-  }).filter((r) => r.fireAt.getTime() > now.getTime());
+    return build('trial', sub, end, fireAt, `${sub.name} free trial ends ${whenText(days)}`, body);
+  });
+  const ahead = scheduled.filter((r) => r.fireAt.getTime() > now.getTime());
+  if (ahead.length) return ahead;
+  const catchUp = trialCatchUp(sub, end, body, scheduled);
+  return catchUp && catchUp.fireAt.getTime() > now.getTime() ? [catchUp] : [];
+}
+
+/**
+ * True when saving a trial now would be too late for its usual 1-day reminder but the trial
+ * hasn't ended: the edit screen says the catch-up notice is coming instead (T1).
+ */
+export function trialLeadsPassed(trialEnd: LocalDate, settings: Settings, now: Date): boolean {
+  const lastLead = Math.max(...TRIAL_LEAD_DAYS.map((d) => atLocalTime(addDays(trialEnd, -d), settings.reminderHour).getTime()));
+  return now.getTime() >= lastLead && toLocalDate(now) <= trialEnd;
+}
+
+function trialCatchUp(sub: Subscription, end: LocalDate, body: string, scheduled: PlannedReminder[]): PlannedReminder | null {
+  const saved = Date.parse(sub.updatedAt);
+  if (!Number.isFinite(saved)) return null;
+  const lastLead = Math.max(...scheduled.map((r) => r.fireAt.getTime()));
+  // Only when no lead reminder could have fired after the save, and the trial end day hasn't passed.
+  if (saved < lastLead) return null;
+  const savedDay = toLocalDate(new Date(saved));
+  if (savedDay > end) return null;
+  const days = Math.round((atLocalTime(end, 12).getTime() - atLocalTime(savedDay, 12).getTime()) / 86_400_000);
+  const fireAt = new Date(saved + TRIAL_CATCH_UP_MS);
+  return build('trial', sub, end, fireAt, `${sub.name} free trial ends ${whenText(days)}`, body);
 }
 
 /**

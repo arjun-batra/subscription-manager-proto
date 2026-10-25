@@ -79,9 +79,11 @@ export function ImportPreview({ initial, onDone }: { initial: PreviewRow[]; onDo
                 </Text>
                 <Text style={{ color: r.status === 'valid' ? p.secondaryText : r.status === 'invalid' ? p.danger : p.warningText, fontSize: 14 }}>
                   {r.draft
-                    ? `${formatMoney(r.draft.amount, r.draft.currency)} · ${describeCycle(r.draft.cycle)} · ${r.draft.anchorDate}${
+                    ? `${r.draft.variable ? 'about ' : ''}${formatMoney(r.draft.amount, r.draft.currency)} · ${describeCycle(r.draft.cycle)} · ${r.draft.anchorDate}${
                         r.draft.trialEndDate ? ` · trial ends ${r.draft.trialEndDate}` : ''
-                      }${r.draft.totalPayments ? ` · plan of ${r.draft.totalPayments}` : ''}`
+                      }${r.draft.totalPayments ? ` · plan of ${r.draft.totalPayments}` : ''}${
+                        r.draft.actuals.length ? ` · ${r.draft.actuals.length} actual${r.draft.actuals.length === 1 ? '' : 's'}` : ''
+                      }`
                     : ''}
                   {r.status !== 'valid' ? `${r.draft ? ' · ' : ''}${r.status === 'duplicate' ? 'Possible duplicate' : `Line ${r.line}: ${r.reason}`}` : ''}
                 </Text>

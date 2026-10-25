@@ -1,5 +1,5 @@
-import { daysBetween, firstIndexOnOrAfter, nextOnOrAfter, occurrence, occurrencesBetween } from './dates';
-import type { Cycle, LocalDate, Subscription } from './types';
+import { addDays, daysBetween, firstIndexOnOrAfter, nextOnOrAfter, occurrence, occurrencesBetween } from './dates';
+import type { ActualCharge, Cycle, LocalDate, Subscription } from './types';
 
 /** An instalment plan: a fixed number of payments, then it stops. */
 export function isPlan(sub: Subscription): boolean {
@@ -159,4 +159,62 @@ export function minCycleDays(cycle: Cycle): number {
 /** True when the item can renew more often than the reminder lead time. */
 export function cycleShorterThanLead(cycle: Cycle, leadDays: number): boolean {
   return minCycleDays(cycle) < leadDays;
+}
+
+/** A variable bill (plans never vary: their payments are fixed). */
+export function isVariable(sub: Subscription): boolean {
+  return !!sub.variable && !isPlan(sub);
+}
+
+/** How many recent actuals the estimate averages. */
+export const ESTIMATE_WINDOW = 3;
+
+/** Logged actuals, oldest first. */
+export function sortedActuals(sub: Subscription): ActualCharge[] {
+  return [...(sub.actuals ?? [])].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
+/**
+ * What a future charge is expected to cost, in the item's currency. Fixed items: `amount`.
+ * Variable bills: the average of the last 3 logged actuals (fewer if fewer are logged), or the
+ * user's estimate (`amount`) until anything is logged.
+ */
+export function expectedAmount(sub: Subscription): number {
+  if (!isVariable(sub)) return sub.amount;
+  const recent = sortedActuals(sub).slice(-ESTIMATE_WINDOW);
+  if (!recent.length) return sub.amount;
+  return recent.reduce((acc, a) => acc + a.amount, 0) / recent.length;
+}
+
+/** The amount for one charge: the logged actual for that date if there is one, else the expected amount. */
+export function amountForCharge(sub: Subscription, date: LocalDate): number {
+  if (isVariable(sub)) {
+    const actual = sub.actuals?.find((a) => a.date === date);
+    if (actual) return actual.amount;
+  }
+  return expectedAmount(sub);
+}
+
+/** The most recent `count` charge dates on or before `today`, newest first (none before the first charge). */
+export function pastCharges(sub: Subscription, today: LocalDate, count: number): LocalDate[] {
+  const first = firstChargeDate(sub);
+  const end = planEndDate(sub);
+  const out: LocalDate[] = [];
+  for (let k = firstIndexOnOrAfter(sub.anchorDate, sub.cycle, addDays(today, 1)) - 1; out.length < count; k -= 1) {
+    const d = occurrence(sub.anchorDate, sub.cycle, k);
+    if (first && d < first) break;
+    if (end && d > end) continue;
+    out.push(d);
+  }
+  return out;
+}
+
+/** Returns the subscription with an actual logged for `date` (replacing any earlier one). */
+export function withActual(sub: Subscription, date: LocalDate, amount: number): Subscription {
+  const rest = (sub.actuals ?? []).filter((a) => a.date !== date);
+  return { ...sub, actuals: [...rest, { date, amount }].sort((a, b) => (a.date < b.date ? -1 : 1)) };
+}
+
+export function withoutActual(sub: Subscription, date: LocalDate): Subscription {
+  return { ...sub, actuals: (sub.actuals ?? []).filter((a) => a.date !== date) };
 }

@@ -1,24 +1,40 @@
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useState } from 'react';
-import { Alert, KeyboardAvoidingView, Linking, Platform, ScrollView, Switch, Text, View } from 'react-native';
+import * as Haptics from 'expo-haptics';
+import { Alert, KeyboardAvoidingView, Linking, Platform, ScrollView, Switch, Text, TextInput, View } from 'react-native';
 
 import { newId } from '../data/db';
-import { daysBetween, formatYMD, isValidLocalDate, parseLocalDate, shortDate, toLocalDate } from '../domain/dates';
+import {
+  daysBetween,
+  describeWeekdayRule,
+  formatYMD,
+  isValidLocalDate,
+  nextWeekdayRuleDate,
+  parseLocalDate,
+  shortDate,
+  toLocalDate,
+  weekdayRulesFor,
+} from '../domain/dates';
 import { COMMON_CURRENCIES, formatMoney, isValidCurrency } from '../domain/money';
 import {
   cycleShorterThanLead,
   describeTrialLeft,
+  expectedAmount,
   isPlan,
   lastPaymentDate,
   MAX_PLAN_PAYMENTS,
   nextCharge,
+  pastCharges,
   planEndDate,
   planFromInputs,
   planStatus,
   trialDaysLeft,
 } from '../domain/schedule';
-import type { Cycle, Subscription } from '../domain/types';
+import { trialLeadsPassed } from '../domain/reminders';
+import type { Cycle, Subscription, Weekday, WeekdayRule } from '../domain/types';
 import { Button, Card, Chip, Field, Row, SectionHeader } from './components';
+import { MenuPicker, Segmented } from './native';
+import { mergeActuals } from './rows';
 import { useStore } from './store';
 import { usePalette } from './theme';
 
@@ -31,7 +47,21 @@ const CYCLES: { label: string; cycle: Cycle }[] = [
 ];
 const UNITS: Cycle['unit'][] = ['day', 'week', 'month', 'year'];
 
-const sameCycle = (a: Cycle, b: Cycle) => a.unit === b.unit && a.every === b.every;
+const sameRule = (a?: WeekdayRule | null, b?: WeekdayRule | null) => (a ?? null) === (b ?? null) || (!!a && !!b && a.nth === b.nth && a.day === b.day);
+const sameCycle = (a: Cycle, b: Cycle) => a.unit === b.unit && a.every === b.every && sameRule(a.weekday, b.weekday);
+/** The preset chips compare length only; the weekday rule is its own control. */
+const sameLength = (a: Cycle, b: Cycle) => a.unit === b.unit && a.every === b.every;
+
+const NTH_CHOICES: { value: WeekdayRule['nth']; label: string }[] = [
+  { value: 1, label: '1st' },
+  { value: 2, label: '2nd' },
+  { value: 3, label: '3rd' },
+  { value: 4, label: '4th' },
+  { value: -1, label: 'Last' },
+];
+const DAY_CHOICES: { value: Weekday; label: string }[] = (
+  ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const
+).map((label, i) => ({ value: i as Weekday, label }));
 
 type Kind = 'subscription' | 'plan';
 
@@ -62,7 +92,7 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
   const [amount, setAmount] = useState(existing ? String(existing.amount) : '');
   const [currency, setCurrency] = useState(existing?.currency ?? store.settings.homeCurrency);
   const [cycle, setCycle] = useState<Cycle>(existing?.cycle ?? { unit: 'month', every: 1 });
-  const [custom, setCustom] = useState(existing ? !CYCLES.slice(0, 4).some((c) => sameCycle(c.cycle, existing.cycle)) : false);
+  const [custom, setCustom] = useState(existing ? !CYCLES.slice(0, 4).some((c) => sameLength(c.cycle, existing.cycle)) : false);
   // Show the next upcoming charge, not the stored anchor (which can be months back).
   const [initialDate] = useState(() => (existing ? nextCharge(existing, store.today) : store.today));
   const [date, setDate] = useState(initialDate);
@@ -80,6 +110,9 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
   const [lengthMode, setLengthMode] = useState<'count' | 'end'>('count');
   const [totalPayments, setTotalPayments] = useState(initialPlan ? String(initialPlan.total) : '');
   const [lastPayment, setLastPayment] = useState(() => (existing && isPlan(existing) ? planEndDate(existing)! : store.today));
+  const [variable, setVariable] = useState(existing?.variable ?? false);
+  /** Amounts typed for past charges, by date ('' clears one). Only edited dates are here. */
+  const [typedActuals, setTypedActuals] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
@@ -92,8 +125,12 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
     if (!isValidCurrency(currency)) e.currency = 'Use a 3-letter code, like CAD or USD.';
     if (!Number.isInteger(cycle.every) || cycle.every < 1 || cycle.every > 365) e.cycle = 'Enter a whole number from 1 to 365.';
     if (!isValidLocalDate(date)) e.date = 'Pick a date.';
+    // A weekday rule moves the date to the next matching day ("2nd Tuesday" on or after it).
+    const ruled = cycle.unit === 'month' && cycle.weekday && isValidLocalDate(date) ? nextWeekdayRuleDate(date, cycle.weekday) : date;
+    const cycleToSave: Cycle = cycle.unit === 'month' && cycle.weekday ? cycle : { unit: cycle.unit, every: cycle.every };
     const isTrial = kind === 'subscription' && trial;
     if (isTrial && isValidLocalDate(date) && date < store.today) e.date = 'A trial has to end today or later.';
+    if (isTrial && cycleToSave.weekday && ruled !== date) e.date = `A trial ends on the day you pick; pick a ${describeWeekdayRule(cycleToSave.weekday)}.`;
     let planFields: { anchorDate: string; startDate: string; totalPayments: number } | null = null;
     if (kind === 'plan') {
       const made = Number(paymentsMade);
@@ -103,7 +140,7 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
         !!existing &&
         !!initialPlan &&
         date === initialDate &&
-        sameCycle(cycle, existing.cycle) &&
+        sameCycle(cycleToSave, existing.cycle) &&
         made === initialPlan.paid &&
         lengthMode === 'count' &&
         total === initialPlan.total;
@@ -115,8 +152,8 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
         e.totalPayments = `Enter a whole number from 1 to ${MAX_PLAN_PAYMENTS}.`;
       } else if (isValidLocalDate(date)) {
         planFields = planFromInputs({
-          nextPayment: date,
-          cycle,
+          nextPayment: ruled,
+          cycle: cycleToSave,
           paymentsMade: made,
           ...(lengthMode === 'count' ? { totalPayments: total } : { lastPayment }),
         });
@@ -128,39 +165,55 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
         }
       }
     }
-    setErrors(e);
-    if (Object.keys(e).length) return;
-    setSaving(true);
+    const isVariableBill = kind === 'subscription' && variable;
+    if (Object.keys(e).length) {
+      setErrors(e);
+      return;
+    }
     const now = new Date().toISOString();
     // Keep the original anchor when neither the date nor the cycle changed, so month-end
     // rules still follow it (Jan 31 -> Feb 28 -> Mar 31).
-    const keepAnchor = !!existing && date === initialDate && sameCycle(cycle, existing.cycle);
-    let anchorDate = keepAnchor ? existing!.anchorDate : date;
+    const keepAnchor = !!existing && date === initialDate && sameCycle(cycleToSave, existing.cycle);
+    let anchorDate = keepAnchor ? existing!.anchorDate : ruled;
     // A trial's first charge is the trial end, so nothing before it counts as paid.
-    let startDate = isTrial ? date : firstCharge ? (keepAnchor ? (existing!.startDate ?? date) : date) : null;
+    let startDate = isTrial ? ruled : firstCharge ? (keepAnchor ? (existing!.startDate ?? ruled) : ruled) : null;
     if (planFields) {
       anchorDate = planFields.anchorDate;
       startDate = planFields.startDate;
     }
+    const draft: Subscription = {
+      id: existing?.id ?? newId(),
+      name: name.trim(),
+      amount: amountNum,
+      currency: currency.trim().toUpperCase(),
+      cycle: cycleToSave,
+      anchorDate,
+      startDate,
+      trialEndDate: isTrial ? ruled : null,
+      totalPayments: planFields ? planFields.totalPayments : null,
+      categoryIds,
+      notes: notes.trim(),
+      manageUrl: manageUrl.trim(),
+      remindersEnabled: reminders,
+      cancelled,
+      variable: isVariableBill,
+      actuals: isVariableBill ? (existing?.actuals ?? []) : [],
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    if (isVariableBill) {
+      const merged = mergeActuals(draft, typedActuals);
+      if ('error' in merged) {
+        setErrors({ actuals: merged.error });
+        return;
+      }
+      draft.actuals = merged.actuals;
+    }
+    setErrors({});
+    setSaving(true);
     try {
-      await store.saveSubscription({
-        id: existing?.id ?? newId(),
-        name: name.trim(),
-        amount: amountNum,
-        currency: currency.trim().toUpperCase(),
-        cycle,
-        anchorDate,
-        startDate,
-        trialEndDate: isTrial ? date : null,
-        totalPayments: planFields ? planFields.totalPayments : null,
-        categoryIds,
-        notes: notes.trim(),
-        manageUrl: manageUrl.trim(),
-        remindersEnabled: reminders,
-        cancelled,
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-      });
+      await store.saveSubscription(draft);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       onDone();
     } catch (err) {
       Alert.alert('Couldn’t save', String(err));
@@ -176,6 +229,7 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
           await store.deleteSubscription(existing.id);
           onDone();
         },
@@ -184,6 +238,18 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
   }
 
   const isTrialForm = kind === 'subscription' && trial;
+  const variableForm = kind === 'subscription' && variable;
+  const ruleNote =
+    cycle.unit === 'month' && cycle.weekday && isValidLocalDate(date)
+      ? (() => {
+          const first = nextWeekdayRuleDate(date, cycle.weekday!);
+          const every = cycle.every === 1 ? 'each month' : `every ${cycle.every} months`;
+          return `Charges on the ${describeWeekdayRule(cycle.weekday!)} ${every}${first !== date ? `; the next one is ${shortDate(first, store.today)}` : ''}.`;
+        })()
+      : '';
+  // Past charges of the stored schedule (the list below edits those dates).
+  const loggable = existing && variableForm ? pastCharges(existing, store.today, 6) : [];
+  const estimateText = existing ? formatMoney(expectedAmount({ ...existing, amount: Number.isFinite(amountNum) && amountNum > 0 ? amountNum : existing.amount }), currency) : '';
   const trialLeft = isTrialForm && isValidLocalDate(date) && date >= store.today ? daysBetween(store.today, date) : null;
   const preview =
     kind === 'plan' && isValidLocalDate(date) && /^\d+$/.test(paymentsMade.trim())
@@ -207,10 +273,15 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
         <Button title="Save" onPress={save} disabled={saving} />
       </View>
       <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 48 }}>
-        <View style={{ flexDirection: 'row', paddingHorizontal: 16, paddingTop: 8 }}>
-          <Chip label="Subscription" selected={kind === 'subscription'} onPress={() => setKind('subscription')} />
-          <Chip label="Payment plan" selected={kind === 'plan'} onPress={() => setKind('plan')} />
-        </View>
+        <Segmented<Kind>
+          label="Kind"
+          value={kind}
+          onChange={setKind}
+          choices={[
+            { value: 'subscription', label: 'Subscription' },
+            { value: 'plan', label: 'Payment plan' },
+          ]}
+        />
         <Card style={{ marginTop: 8 }}>
           <Field
             label="Name"
@@ -221,7 +292,17 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
             autoFocus={!existing}
           />
           <Field
-            label={kind === 'plan' ? 'Amount per payment' : isTrialForm ? 'Price after trial' : 'Amount'}
+            label={
+              kind === 'plan'
+                ? 'Amount per payment'
+                : isTrialForm
+                  ? variableForm
+                    ? 'Estimated price after trial'
+                    : 'Price after trial'
+                  : variableForm
+                    ? 'Estimated amount'
+                    : 'Amount'
+            }
             value={amount}
             onChangeText={setAmount}
             keyboardType="decimal-pad"
@@ -241,13 +322,25 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
               <Chip key={c} label={c} selected={currency === c} onPress={() => setCurrency(c)} />
             ))}
           </View>
+          {kind === 'subscription' ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, paddingTop: 4 }}>
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={{ color: p.text, fontSize: 17 }}>Varies</Text>
+                <Text style={{ color: p.secondaryText, fontSize: 14 }}>
+                  For bills like hydro or phone. The amount is an estimate; log what you’re charged and future charges use
+                  the average of the last 3.
+                </Text>
+              </View>
+              <Switch value={variable} onValueChange={setVariable} accessibilityLabel="Amount varies" />
+            </View>
+          ) : null}
         </Card>
 
         <SectionHeader>Billing</SectionHeader>
         <Card>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', padding: 12, paddingBottom: 4 }}>
             {CYCLES.map((c) => {
-              const selected = c.label === 'Custom' ? custom : !custom && sameCycle(c.cycle, cycle);
+              const selected = c.label === 'Custom' ? custom : !custom && sameLength(c.cycle, cycle);
               return (
                 <Chip
                   key={c.label}
@@ -255,7 +348,7 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
                   selected={selected}
                   onPress={() => {
                     setCustom(c.label === 'Custom');
-                    if (c.label !== 'Custom') setCycle(c.cycle);
+                    if (c.label !== 'Custom') setCycle(c.cycle.unit === 'month' ? { ...c.cycle, weekday: cycle.weekday } : c.cycle);
                   }}
                 />
               );
@@ -277,6 +370,46 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
               </View>
             </>
           ) : null}
+          {cycle.unit === 'month' ? (
+            <>
+              <Segmented<'day' | 'weekday'>
+                label="Repeats on"
+                value={cycle.weekday ? 'weekday' : 'day'}
+                onChange={(v) =>
+                  setCycle({
+                    ...cycle,
+                    weekday: v === 'weekday' ? (weekdayRulesFor(isValidLocalDate(date) ? date : store.today)[0] ?? { nth: -1, day: 0 }) : null,
+                  })
+                }
+                choices={[
+                  { value: 'day', label: 'Same date' },
+                  { value: 'weekday', label: 'Same weekday' },
+                ]}
+              />
+              {cycle.weekday ? (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 4 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                    <Text style={{ color: p.text, fontSize: 17 }}>On the</Text>
+                    <MenuPicker<WeekdayRule['nth']>
+                      label="Which week"
+                      value={cycle.weekday.nth}
+                      onChange={(nth) => setCycle({ ...cycle, weekday: { ...cycle.weekday!, nth } })}
+                      choices={NTH_CHOICES}
+                    />
+                    <MenuPicker<Weekday>
+                      label="Weekday"
+                      value={cycle.weekday.day}
+                      onChange={(day) => setCycle({ ...cycle, weekday: { ...cycle.weekday!, day } })}
+                      choices={DAY_CHOICES}
+                    />
+                  </View>
+                  <Text style={{ color: p.secondaryText, fontSize: 14, marginTop: 4 }}>
+                    {ruleNote}
+                  </Text>
+                </View>
+              ) : null}
+            </>
+          ) : null}
           {kind === 'subscription' ? (
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, paddingBottom: 0 }}>
               <View style={{ flex: 1, paddingRight: 12 }}>
@@ -294,6 +427,11 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
             onChange={setDate}
           />
           {errors.date ? <Text style={{ color: p.danger, paddingHorizontal: 16, paddingBottom: 8 }}>{errors.date}</Text> : null}
+          {isTrialForm && reminders && !cancelled && isValidLocalDate(date) && trialLeadsPassed(date, store.settings, new Date()) ? (
+            <Text style={{ color: p.text, fontSize: 14, paddingHorizontal: 16, paddingBottom: 8 }}>
+              It’s past the usual reminder time for this trial, so you’ll get one reminder about a minute after you save.
+            </Text>
+          ) : null}
           {isTrialForm ? (
             <Text style={{ color: p.secondaryText, fontSize: 14, paddingHorizontal: 16, paddingBottom: 12 }}>
               {trialLeft !== null
@@ -310,10 +448,15 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
                 keyboardType="number-pad"
                 error={errors.paymentsMade}
               />
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', padding: 12, paddingBottom: 4 }}>
-                <Chip label="Number of payments" selected={lengthMode === 'count'} onPress={() => setLengthMode('count')} />
-                <Chip label="Last payment date" selected={lengthMode === 'end'} onPress={() => setLengthMode('end')} />
-              </View>
+              <Segmented<'count' | 'end'>
+                label="Plan length"
+                value={lengthMode}
+                onChange={setLengthMode}
+                choices={[
+                  { value: 'count', label: 'Number of payments' },
+                  { value: 'end', label: 'Last payment' },
+                ]}
+              />
               {lengthMode === 'count' ? (
                 <Field
                   label="Total number of payments"
@@ -361,6 +504,55 @@ export function EditSubscription({ existing, onDone }: { existing?: Subscription
             </View>
           ) : null}
         </Card>
+
+        {variableForm ? (
+          <>
+            <SectionHeader>Actual amounts</SectionHeader>
+            <Card>
+              {loggable.length === 0 ? (
+                <Text style={{ color: p.secondaryText, fontSize: 15, padding: 16 }}>
+                  {existing
+                    ? 'No charges yet. Once one has happened, log what you were charged here or from the list (swipe right, or touch and hold).'
+                    : 'Save first. Then log what you were charged for each past charge here or from the list.'}
+                </Text>
+              ) : (
+                loggable.map((d, i) => {
+                  const stored = existing?.actuals?.find((a) => a.date === d);
+                  const value = d in typedActuals ? typedActuals[d] : stored ? String(stored.amount) : '';
+                  return (
+                    <View
+                      key={d}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        paddingHorizontal: 16,
+                        paddingVertical: 10,
+                        borderBottomWidth: i === loggable.length - 1 ? 0 : 0.5,
+                        borderBottomColor: p.separator,
+                      }}
+                    >
+                      <Text style={{ color: p.text, fontSize: 17, flex: 1 }}>{shortDate(d, store.today)}</Text>
+                      <TextInput
+                        value={value}
+                        onChangeText={(t) => setTypedActuals((m) => ({ ...m, [d]: t }))}
+                        keyboardType="decimal-pad"
+                        placeholder={`est. ${estimateText}`}
+                        placeholderTextColor={p.secondaryText}
+                        accessibilityLabel={`Actual amount for ${shortDate(d, store.today)}`}
+                        style={{ color: p.text, fontSize: 17, minWidth: 110, textAlign: 'right', fontVariant: ['tabular-nums'] }}
+                      />
+                    </View>
+                  );
+                })
+              )}
+              {errors.actuals ? <Text style={{ color: p.danger, paddingHorizontal: 16, paddingBottom: 8 }}>{errors.actuals}</Text> : null}
+              <Text style={{ color: p.secondaryText, fontSize: 14, padding: 16, paddingTop: 4 }}>
+                Leave a charge blank to use the estimate. Paid-so-far uses what you log. Changing the date or schedule drops
+                amounts logged for days that are no longer charge days.
+              </Text>
+            </Card>
+          </>
+        ) : null}
 
         <SectionHeader>Categories</SectionHeader>
         <Card>

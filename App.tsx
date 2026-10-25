@@ -1,4 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
+import { SymbolView, type SFSymbol } from 'expo-symbols';
 import { useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
@@ -14,10 +15,10 @@ import { StoreProvider, useStore } from './src/ui/store';
 import { usePalette } from './src/ui/theme';
 
 type Tab = 'home' | 'categories' | 'settings';
-const TABS: { id: Tab; label: string; icon: string }[] = [
-  { id: 'home', label: 'Home', icon: '◉' },
-  { id: 'categories', label: 'Categories', icon: '▦' },
-  { id: 'settings', label: 'Settings', icon: '⚙︎' },
+const TABS: { id: Tab; label: string; icon: string; symbol: SFSymbol }[] = [
+  { id: 'home', label: 'Home', icon: '◉', symbol: 'house.fill' },
+  { id: 'categories', label: 'Categories', icon: '▦', symbol: 'square.grid.2x2.fill' },
+  { id: 'settings', label: 'Settings', icon: '⚙︎', symbol: 'gearshape.fill' },
 ];
 
 function Shell() {
@@ -59,7 +60,13 @@ function Shell() {
               accessibilityLabel={t.label}
               style={{ flex: 1, alignItems: 'center', paddingVertical: 8 }}
             >
-              <Text style={{ fontSize: 20, color: selected ? p.accent : p.secondaryText }}>{t.icon}</Text>
+              <SymbolView
+                name={t.symbol}
+                size={22}
+                tintColor={selected ? p.accent : p.secondaryText}
+                style={{ width: 24, height: 24 }}
+                fallback={<Text style={{ fontSize: 20, color: selected ? p.accent : p.secondaryText }}>{t.icon}</Text>}
+              />
               <Text style={{ fontSize: 11, color: selected ? p.accent : p.secondaryText, fontWeight: selected ? '600' : '400' }}>
                 {t.label}
               </Text>

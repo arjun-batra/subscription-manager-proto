@@ -1,4 +1,4 @@
-import type { Cycle, LocalDate } from './types';
+import type { Cycle, LocalDate, Weekday, WeekdayRule } from './types';
 
 const ISO_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
@@ -81,6 +81,72 @@ export function daysBetween(a: LocalDate, b: LocalDate): number {
   );
 }
 
+/** Day of the week of a local date, 0 = Sunday. */
+export function weekdayOf(date: LocalDate): Weekday {
+  const { y, m, d } = mustParse(date);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay() as Weekday;
+}
+
+/** The date of "the nth weekday" in a month (nth -1 = the last one). */
+export function nthWeekdayOfMonth(y: number, m: number, rule: WeekdayRule): LocalDate {
+  if (rule.nth === -1) {
+    const last = daysInMonth(y, m);
+    const lastDow = new Date(Date.UTC(y, m - 1, last)).getUTCDay();
+    return formatYMD({ y, m, d: last - ((lastDow - rule.day + 7) % 7) });
+  }
+  const firstDow = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+  return formatYMD({ y, m, d: 1 + ((rule.day - firstDow + 7) % 7) + (rule.nth - 1) * 7 });
+}
+
+/**
+ * The rules a date satisfies, for offering them in the editor: "the 3rd Tuesday" (days 1-28)
+ * and, in the last 7 days of the month, "the last Tuesday". Day 29-31 only has "last".
+ */
+export function weekdayRulesFor(date: LocalDate): WeekdayRule[] {
+  const { y, m, d } = mustParse(date);
+  const day = weekdayOf(date);
+  const out: WeekdayRule[] = [];
+  const nth = Math.ceil(d / 7);
+  if (nth <= 4) out.push({ nth: nth as 1 | 2 | 3 | 4, day });
+  if (d + 7 > daysInMonth(y, m)) out.push({ nth: -1, day });
+  return out;
+}
+
+/** The first date on or after `date` that matches the rule. */
+export function nextWeekdayRuleDate(date: LocalDate, rule: WeekdayRule): LocalDate {
+  const { y, m } = mustParse(date);
+  const here = nthWeekdayOfMonth(y, m, rule);
+  if (here >= date) return here;
+  const next = addMonthsClamped(formatYMD({ y, m, d: 1 }), 1);
+  const n = mustParse(next);
+  return nthWeekdayOfMonth(n.y, n.m, rule);
+}
+
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const ORDINALS: Record<string, string> = { '1': '1st', '2': '2nd', '3': '3rd', '4': '4th', '-1': 'last' };
+
+/** "2nd Tuesday", "last Friday"; short: "2nd Tue". */
+export function describeWeekdayRule(rule: WeekdayRule, short = false): string {
+  const name = WEEKDAY_NAMES[rule.day];
+  return `${ORDINALS[String(rule.nth)]} ${short ? name.slice(0, 3) : name}`;
+}
+
+/** Parses "2nd tue", "last friday", "3rd Wednesday". */
+export function parseWeekdayRule(raw: string): WeekdayRule | null {
+  const m = /^(1st|2nd|3rd|4th|last)\s+([a-z]+)$/.exec(raw.trim().toLowerCase().replace(/\s+/g, ' '));
+  if (!m) return null;
+  const nth = ({ '1st': 1, '2nd': 2, '3rd': 3, '4th': 4, last: -1 } as const)[m[1] as '1st'];
+  const day = WEEKDAY_NAMES.findIndex((n) => {
+    const l = n.toLowerCase();
+    return m[2] === l || (m[2].length >= 3 && l.startsWith(m[2]));
+  });
+  return day < 0 ? null : { nth, day: day as Weekday };
+}
+
+export function isValidWeekdayRule(r: WeekdayRule): boolean {
+  return [1, 2, 3, 4, -1].includes(r.nth) && Number.isInteger(r.day) && r.day >= 0 && r.day <= 6;
+}
+
 /**
  * The k-th charge date counted from the anchor (k may be negative).
  * Always computed from the anchor, never from the previous charge, so month-end
@@ -93,8 +159,13 @@ export function occurrence(anchor: LocalDate, cycle: Cycle, k: number): LocalDat
       return addDays(anchor, n);
     case 'week':
       return addDays(anchor, n * 7);
-    case 'month':
-      return addMonthsClamped(anchor, n);
+    case 'month': {
+      if (!cycle.weekday) return addMonthsClamped(anchor, n);
+      // "2nd Tuesday": same rule in the anchor's month + n months. Pure calendar maths, so DST
+      // and time zones don't move it.
+      const { y, m } = mustParse(addMonthsClamped(anchor, n));
+      return nthWeekdayOfMonth(y, m, cycle.weekday);
+    }
     case 'year':
       return addMonthsClamped(anchor, n * 12);
   }
@@ -148,11 +219,17 @@ export function isValidCycle(c: Cycle): boolean {
     ['day', 'week', 'month', 'year'].includes(c.unit) &&
     Number.isInteger(c.every) &&
     c.every >= 1 &&
-    c.every <= 365
+    c.every <= 365 &&
+    (!c.weekday || (c.unit === 'month' && isValidWeekdayRule(c.weekday)))
   );
 }
 
 export function describeCycle(c: Cycle): string {
+  const base = describeBaseCycle(c);
+  return c.unit === 'month' && c.weekday ? `${base} on the ${describeWeekdayRule(c.weekday)}` : base;
+}
+
+function describeBaseCycle(c: Cycle): string {
   if (c.every === 1) {
     return { day: 'Daily', week: 'Weekly', month: 'Monthly', year: 'Yearly' }[c.unit];
   }

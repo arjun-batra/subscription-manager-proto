@@ -5,7 +5,9 @@ import { newId } from '../data/db';
 import { formatMoney } from '../domain/money';
 import { computeTotals } from '../domain/totals';
 import { UNCATEGORIZED_ID, type Category } from '../domain/types';
+import { CategoryIcon } from './CategoryIcon';
 import { Button, Card, Row, SectionHeader } from './components';
+import { categorySymbol } from './look';
 import { useStore } from './store';
 import { usePalette } from './theme';
 
@@ -88,6 +90,7 @@ export function CategoriesScreen() {
           return (
             <Row
               key={c.id}
+              leading={<CategoryIcon symbol={categorySymbol(c.id, c.name)} color={p.accent} size={20} />}
               title={c.name}
               subtitle={`${c.count} subscription${c.count === 1 ? '' : 's'} · ${formatMoney(c.yearly, settings.homeCurrency)}/yr${
                 c.missingRate.length

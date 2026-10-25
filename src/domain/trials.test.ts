@@ -139,11 +139,13 @@ describe('trials in CSV', () => {
 
   it('rejects a bad trial end date or a next charge before it', () => {
     const head = 'name,amount,currency,cycle,next charge date,trial end date\n';
-    const p = previewImport(`${head}A,5,CAD,monthly,2026-11-05,2026-13-01\nB,5,CAD,monthly,2026-11-01,2026-11-05\n`, []);
+    const p = previewImport(
+      `${head}A,5,CAD,monthly,2026-11-05,2026-13-01\nB,5,CAD,monthly,2026-11-01,2026-11-05\nC,5,CAD,monthly,2026-12-01,2026-11-20\n`,
+      [],
+    );
     if (!p.ok) throw new Error(p.error);
-    expect(p.rows.map((r) => r.reason)).toEqual([
-      'trial end date must be YYYY-MM-DD',
-      "next charge date can't be before the trial end date",
-    ]);
+    // T2: a trial end before the next charge date is rejected too (the first charge is the trial end).
+    const same = 'next charge date must be the trial end date (the first charge is when the trial ends)';
+    expect(p.rows.map((r) => r.reason)).toEqual(['trial end date must be YYYY-MM-DD', same, same]);
   });
 });
